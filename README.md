@@ -39,6 +39,10 @@ For a single project, put it in `.claude/skills/atelier/SKILL.md` instead (this 
 **Claude.ai / Claude desktop:** download `SKILL.md`, put it in a folder named `atelier`, zip the folder and upload it in
 *Settings → Capabilities → Skills*. The skill installs the package itself with the `pip install` line above.
 
+**Updating:** nothing updates automatically. Package: `pip install -U git+https://github.com/Wexop/atelier`
+(the version is bumped on every package change). Skill: re-run the `curl` / `Invoke-WebRequest` line above,
+or re-upload the zip on Claude.ai.
+
 ## Quick start
 
 ```python
@@ -80,6 +84,8 @@ pip install -e ".[test]"
 pytest
 python bench.py        # preview / final timings of the demo scenes
 ```
+
+Contribution rules (language, versioning, SKILL.md sync, tests) are in [CLAUDE.md](CLAUDE.md).
 
 Fonts in `atelier/fonts` are distributed under the SIL Open Font License (see `atelier/fonts/LICENSE.md`).
 Code: MIT.
