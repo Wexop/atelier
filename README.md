@@ -15,6 +15,30 @@ pip install git+https://github.com/Wexop/atelier
 
 Python ≥ 3.11. Dependencies: numpy, pillow, opencv-python-headless, scipy, skia-python.
 
+## Install the skill (for AI agents)
+
+[SKILL.md](SKILL.md) is a compact cheat sheet that teaches an agent the whole API and the render → look → fix loop.
+
+**If you are an AI agent:** run `pip install git+https://github.com/Wexop/atelier`, then read
+<https://raw.githubusercontent.com/Wexop/atelier/main/SKILL.md> and follow it.
+
+**Claude Code** (personal skill, available in every project):
+
+```bash
+mkdir -p ~/.claude/skills/atelier && curl -fsSL https://raw.githubusercontent.com/Wexop/atelier/main/SKILL.md -o ~/.claude/skills/atelier/SKILL.md
+```
+
+Windows PowerShell:
+
+```powershell
+New-Item -ItemType Directory -Force "$HOME\.claude\skills\atelier" | Out-Null; Invoke-WebRequest https://raw.githubusercontent.com/Wexop/atelier/main/SKILL.md -OutFile "$HOME\.claude\skills\atelier\SKILL.md"
+```
+
+For a single project, put it in `.claude/skills/atelier/SKILL.md` instead (this repo already has it).
+
+**Claude.ai / Claude desktop:** download `SKILL.md`, put it in a folder named `atelier`, zip the folder and upload it in
+*Settings → Capabilities → Skills*. The skill installs the package itself with the `pip install` line above.
+
 ## Quick start
 
 ```python
