@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "atelier"
+version = "0.1.0"
+description = "A procedural image studio driven by short Python scripts (built for LLMs)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Wexop" }]
+keywords = ["image", "procedural", "generative-art", "sdf", "raymarching", "llm"]
+dependencies = [
+    "numpy>=1.26",
+    "pillow>=10",
+    "opencv-python-headless>=4.8",
+    "scipy>=1.11",
+    "skia-python>=87.5",
+]
+
+[project.urls]
+Homepage = "https://github.com/Wexop/atelier"
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.scripts]
+atelier = "atelier.cli:main"
+
+[tool.setuptools]
+packages = ["atelier"]
+
+[tool.setuptools.package-data]
+atelier = ["fonts/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
