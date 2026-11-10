@@ -1,6 +1,6 @@
 ---
 name: atelier
-description: Make images (PNG/JPG/WebP) yourself with code, no generative AI — photoreal 3D (path tracing), oil/watercolour painting, comics and engravings from 3D, people and animals, landscapes (terrain, sky, sea, trees), posters with typography, pixel art, generative abstracts. Use when asked to create, draw, paint or render an image.
+description: Paint images (PNG/JPG/WebP) yourself with code instead of calling an image-generation model — photoreal 3D (path tracing), oil/watercolour painting, comics and engravings from 3D, people and animals, landscapes (terrain, sky, sea, trees), posters with typography, pixel art, generative abstracts. Use when asked to create, draw, paint or render an image.
 ---
 # atelier — image studio driven by short Python scripts
 

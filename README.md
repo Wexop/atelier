@@ -1,10 +1,15 @@
 # atelier
 
-A procedural image studio designed to be driven by an LLM: short Python scripts produce PNG/JPG/WebP images in any
-style (photoreal 3D, oil and watercolour painting, comics and engravings, people, landscapes, posters and typography,
-pixel art, generative abstracts) with **no generative AI and no image API**. Everything is computed on the CPU:
-noise fields, vector shapes, a brush engine, effects, an SDF path tracer, terrain erosion, a physical sky, posable
-figures, and tools that let the LLM inspect its own renders.
+**Let your LLM paint.**
+
+LLMs can write, reason and code, but when you ask one for a picture it hands the job to an image model. atelier gives
+the LLM itself the brush: it writes a short Python script, renders it, **looks at the result and fixes it**, until the
+image is right. No image model is ever called: no diffusion, no image API, no key, no GPU. Every pixel comes from code
+the LLM wrote, computed on the CPU.
+
+That covers any style: photoreal 3D, oil and watercolour painting, comics and engravings, people, landscapes, posters
+and typography, pixel art, generative abstracts. Under the hood: noise fields, vector shapes, a brush engine, effects,
+an SDF path tracer, terrain erosion, a physical sky, posable figures, and tools that let the LLM inspect its own renders.
 
 Website: <https://atelier.wexop.eu> · every image below was made by atelier from a script in [examples/](examples).
 

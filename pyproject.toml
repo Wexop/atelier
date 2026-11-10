@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "atelier"
 dynamic = ["version"]
-description = "A procedural image studio driven by short Python scripts (built for LLMs)."
+description = "Let your LLM paint: it writes, renders and checks images in code, without calling an image model."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Wexop" }]
-keywords = ["image", "procedural", "generative-art", "sdf", "raymarching", "llm"]
+keywords = ["image", "procedural", "generative-art", "sdf", "raymarching", "llm", "ai-agent", "claude", "skill"]
 dependencies = [
     "numpy>=1.26",
     "pillow>=10",
