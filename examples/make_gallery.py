@@ -1,17 +1,22 @@
-# Build examples/gallery.jpg (README banner) from the five example renders.
+# Build examples/gallery.jpg (README / landing banner) from the example renders: a 4 x 3 mosaic.
 import os
 from atelier import *
 
 here = os.path.dirname(os.path.abspath(__file__))
-g = Canvas(1800, 1080, bg="#111111")
-items = [("still_life", 20, 20, 1000, 667), ("landscape", 1040, 20, 740, 493), ("poster", 1040, 533, 370, 527),
-         ("pixel", 1430, 533, 350, 197), ("abstract", 20, 707, 1000, 353)]
-for name, x, y, w, h in items:
+names = ["still_life_pt", "mountains", "comic", "people",
+         "landscape", "typography", "forest", "engraving",
+         "poster", "seascape", "pixel", "abstract"]
+anchor = {"typography": 0.18, "poster": 0.33}          # vertical crop position for portrait images (0 top, 1 bottom)
+cols, tw, th, gap = 4, 450, 300, 10
+rows = -(-len(names) // cols)
+g = Canvas(cols * tw + (cols + 1) * gap, rows * th + (rows + 1) * gap, bg="#111111")
+for i, name in enumerate(names):
     img = load(os.path.join(here, f"{name}.png"))
     ih, iw = img.shape[:2]
-    tile = Canvas(w, h)
-    tile.place(img, w / 2, h / 2, scale=max(w / iw, h / ih), layer=tile.cur)    # cover-fit crop
-    g.place(tile.flatten(), x + w / 2, y + h / 2, scale=1, layer=g.cur)
-g.text("atelier", 1605, 790, 46, fill="#eeeeee", weight="bold", align="center")
-g.text("5 images, 0 generative AI", 1605, 840, 20, fill="#aaaaaa", align="center")
-g.save(os.path.join(here, "gallery.jpg"), quality=88)
+    k = max(tw / iw, th / ih)                        # cover-fit
+    y_off = (ih * k - th) * (anchor.get(name, 0.5) - 0.5)
+    tile = Canvas(tw, th)
+    tile.place(img, tw / 2, th / 2 - y_off, scale=k, layer=tile.cur)
+    x, y = gap + (i % cols) * (tw + gap), gap + (i // cols) * (th + gap)
+    g.place(tile.flatten(), x + tw / 2, y + th / 2, scale=1, layer=g.cur)
+g.save(os.path.join(here, "gallery.jpg"), quality=86)

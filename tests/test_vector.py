@@ -79,3 +79,45 @@ def test_within():
     s = rect(100, 0, 100, 100)
     g = X.within(s).render(100, 300)
     assert abs(g[50, 100] - 0.005) < 0.01 and abs(g[50, 199] - 0.995) < 0.01
+
+
+def test_kerning():
+    for pair in ("AV", "To", "Ty", "LT"):
+        assert text_size(pair, 100)[0] < text_size(pair, 100, kern=False)[0] - 2
+    assert abs(text_size("HH", 100)[0] - text_size("HH", 100, kern=False)[0]) < 1e-3
+    a = text_shape("AV", 0, 0, 100).bounds
+    b = text_shape("AV", 0, 0, 100, kern=False).bounds
+    assert a[2] - a[0] < b[2] - b[0]
+    tf = typeface("sans", 400)[0]
+    assert kern_pairs(tf) is kern_pairs(tf)  # cached
+
+
+def test_text_on_path():
+    arcp = arc(200, 200, 150, 180, 180)
+    t = text_on_path("HELLO WORLD", arcp, 30, align="center")
+    x0, y0, x1, y1 = t.bounds
+    assert 60 < x0 and x1 < 340 and y0 > 20 and y1 < 210
+    flat = text_on_path("HELLO", [(0, 100), (200, 100), (400, 100)], 30)
+    assert abs(flat.bounds[3] - 100) < 2 and flat.bounds[1] < 85
+    lifted = text_on_path("HELLO", [(0, 100), (400, 100)], 30, lift=10)
+    assert abs(lifted.bounds[3] - 90) < 2
+    c = Canvas(400, 260)
+    c.text_on_path("ROUND", arcp, 28, fill="red")
+    assert area(c) > 300
+
+
+def test_text_box():
+    txt = "The quick brown fox jumps over the lazy dog. " * 6
+    b = text_box(txt, 10, 10, 200, size=16)
+    assert b.lines > 4 and b.bounds[2] <= 211 and b.bounds[0] >= 9
+    j = text_box(txt, 10, 10, 200, size=16, align="justify")
+    assert j.lines == b.lines
+    f = text_box(txt, 0, 0, 200, h=60, size=40, fit=True)
+    assert f.size < 40 and f.height <= 60 and f.bounds[3] <= 62
+    r = text_box("plain **bold** [#ff0000]red words[/] end", 0, 0, 400, size=20)
+    assert len(r.runs) == 2 and "#ff0000" in [k for k, _ in r.runs]
+    c = Canvas(300, 200)
+    c.text_box(txt, 10, 10, 280, size=14, align="justify")
+    for st in ("shadow", "extrude", "outline", "inline"):
+        c.title("Title", 20, 150, 60, style=st, fill="#223344")
+    assert area(c) > 2000

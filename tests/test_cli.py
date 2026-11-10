@@ -58,3 +58,28 @@ def test_lists(capsys):
         assert main([cmd]) == 0
     out = capsys.readouterr().out
     assert "sunset" in out and "watercolor" in out and "bloom(" in out
+
+
+def test_inspect_compare_reference(tmp_path, capsys):
+    s = write(tmp_path)
+    assert main(["inspect", s, "--preview", "200", "--guides"]) == 0
+    assert Image.open(tmp_path / "scene_sheet.jpg").size[0] == 1280
+    assert (tmp_path / "scene_guides.jpg").exists()
+    out = capsys.readouterr().out
+    assert "--crop" in out and "noise" in out
+    png = tmp_path / "x.png"
+    Image.new("RGB", (120, 80), (200, 40, 40)).save(png)
+    assert main(["inspect", str(png), "--out", str(tmp_path / "x_sheet.png")]) == 0
+    assert main(["compare", str(png), s, "--labels", "img,scene", "--out", str(tmp_path / "ab.jpg")]) == 0
+    assert (tmp_path / "ab.jpg").exists()
+    assert main(["reference", str(png)]) == 0
+    assert "#c82828" in capsys.readouterr().out
+    assert main(["inspect", str(tmp_path / "missing.png")]) == 2
+    assert main(["compare", str(png), str(png), "--labels", "one"]) == 2
+
+
+def test_preview_scale_shared_by_helper_canvases(tmp_path):
+    p = tmp_path / "multi.py"
+    p.write_text("from atelier import *\nc = Canvas(2000, 1000)\nsub = Canvas(500, 500)\n", encoding="utf8")
+    _, g = run_scene(str(p), width=500, preview=True, nosave=True)
+    assert g["c"].W == 500 and g["sub"].W == 125        # same scale (0.25), not blown up to 500 px

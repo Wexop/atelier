@@ -425,6 +425,177 @@ def svg(d):
     return Shape(p)
 
 
+# ------------------------------------------------------------------ kerning (tiny OpenType reader)
+_KERN_CACHE: dict = {}
+
+
+def _u16(b, o):
+    return (b[o] << 8) | b[o + 1]
+
+
+def _i16(b, o):
+    v = _u16(b, o)
+    return v - 65536 if v >= 32768 else v
+
+
+def _coverage(b, o):
+    """OpenType Coverage table -> {glyph: coverage index}."""
+    fmt, n = _u16(b, o), _u16(b, o + 2)
+    out = {}
+    if fmt == 1:
+        for i in range(n):
+            out[_u16(b, o + 4 + 2 * i)] = i
+    elif fmt == 2:
+        for i in range(n):
+            r = o + 4 + 6 * i
+            s, e, idx = _u16(b, r), _u16(b, r + 2), _u16(b, r + 4)
+            for g in range(s, e + 1):
+                out[g] = idx + g - s
+    return out
+
+
+def _classdef(b, o):
+    """OpenType ClassDef table -> {glyph: class} (missing = class 0)."""
+    fmt = _u16(b, o)
+    out = {}
+    if fmt == 1:
+        start, n = _u16(b, o + 2), _u16(b, o + 4)
+        for i in range(n):
+            out[start + i] = _u16(b, o + 6 + 2 * i)
+    elif fmt == 2:
+        for i in range(_u16(b, o + 2)):
+            r = o + 4 + 6 * i
+            s, e, c = _u16(b, r), _u16(b, r + 2), _u16(b, r + 4)
+            for g in range(s, e + 1):
+                out[g] = c
+    return out
+
+
+def _vsize(vf):
+    return 2 * bin(vf & 0xFF).count("1")
+
+
+def _xadv(b, o, vf):
+    """XAdvance from a ValueRecord at o (0 if absent)."""
+    if not vf & 4:
+        return 0
+    return _i16(b, o + 2 * bin(vf & 3).count("1"))
+
+
+def _pairpos(b, o, subs):
+    fmt, cov = _u16(b, o), _coverage(b, o + _u16(b, o + 2))
+    vf1, vf2 = _u16(b, o + 4), _u16(b, o + 6)
+    s1, s2 = _vsize(vf1), _vsize(vf2)
+    if not vf1 & 4:
+        return
+    if fmt == 1:
+        pairs = {}
+        n = _u16(b, o + 8)
+        for g, i in cov.items():
+            if i >= n:
+                continue
+            ps = o + _u16(b, o + 10 + 2 * i)
+            for k in range(_u16(b, ps)):
+                r = ps + 2 + k * (2 + s1 + s2)
+                v = _xadv(b, r + 2, vf1)
+                pairs.setdefault((g, _u16(b, r)), v)
+        subs.append(("p", cov, pairs))
+    elif fmt == 2:
+        cd1, cd2 = _classdef(b, o + _u16(b, o + 8)), _classdef(b, o + _u16(b, o + 10))
+        n1, n2 = _u16(b, o + 12), _u16(b, o + 14)
+        rec = s1 + s2
+        m = np.zeros((n1, n2), np.int32)
+        base = o + 16
+        for c1 in range(n1):
+            for c2 in range(n2):
+                m[c1, c2] = _xadv(b, base + (c1 * n2 + c2) * rec, vf1)
+        subs.append(("c", cov, (cd1, cd2, m)))
+
+
+def _read_gpos(b):
+    subs = []
+    fl, ll = _u16(b, 6), _u16(b, 8)
+    idx = set()
+    for i in range(_u16(b, fl)):
+        r = fl + 2 + 6 * i
+        if b[r:r + 4] == b"kern":
+            f = fl + _u16(b, r + 4)
+            idx.update(_u16(b, f + 4 + 2 * k) for k in range(_u16(b, f + 2)))
+    for li in sorted(idx):
+        lo = ll + _u16(b, ll + 2 + 2 * li)
+        typ, n = _u16(b, lo), _u16(b, lo + 4)
+        for k in range(n):
+            so = lo + _u16(b, lo + 6 + 2 * k)
+            t = typ
+            if t == 9:  # extension
+                t = _u16(b, so + 2)
+                so = so + ((_u16(b, so + 4) << 16) | _u16(b, so + 6))
+            if t == 2:
+                _pairpos(b, so, subs)
+    return subs
+
+
+def _read_kern(b):
+    """Legacy 'kern' table, format 0 subtables (horizontal)."""
+    pairs = {}
+    if _u16(b, 0) != 0:
+        return []
+    o = 4
+    for _ in range(_u16(b, 2)):
+        ln, covf = _u16(b, o + 2), _u16(b, o + 4)
+        if covf >> 8 == 0 and covf & 1:
+            n = _u16(b, o + 6)
+            for k in range(n):
+                r = o + 14 + 6 * k
+                pairs.setdefault((_u16(b, r), _u16(b, r + 2)), _i16(b, r + 4))
+        o += ln
+    return [("p", None, pairs)] if pairs else []
+
+
+def kern_pairs(tf):
+    """Kerning lookup for a skia Typeface (GPOS PairPos 1+2, else legacy 'kern'), cached.
+    -> (subtables, units_per_em); use kern_value(tf, g1, g2) for one pair."""
+    key = tf.uniqueID()
+    if key in _KERN_CACHE:
+        return _KERN_CACHE[key]
+    subs = []
+    tags = set(tf.getTableTags())
+    try:
+        tg = int.from_bytes(b"GPOS", "big")
+        if tg in tags:
+            subs = _read_gpos(bytes(tf.copyTableData(tg)))
+        tk = int.from_bytes(b"kern", "big")
+        if not subs and tk in tags:
+            subs = _read_kern(bytes(tf.copyTableData(tk)))
+    except Exception as e:  # malformed font: no kerning rather than a crash
+        warnings.warn(f"kerning disabled for {tf.getFamilyName()}: {e}")
+        subs = []
+    _KERN_CACHE[key] = (subs, tf.getUnitsPerEm() or 1000)
+    return _KERN_CACHE[key]
+
+
+def _kern(subs, g1, g2):
+    for kind, cov, data in subs:
+        if cov is not None and g1 not in cov:
+            continue
+        if kind == "p":
+            v = data.get((g1, g2))
+            if v is not None:
+                return v
+        else:
+            cd1, cd2, m = data
+            c1, c2 = cd1.get(g1, 0), cd2.get(g2, 0)
+            if c1 < m.shape[0] and c2 < m.shape[1]:
+                return int(m[c1, c2])
+            return 0
+    return 0
+
+
+def kern_value(tf, g1, g2):
+    """Kerning between glyph ids g1, g2 in font units (negative = tighter)."""
+    return _kern(kern_pairs(tf)[0], g1, g2)
+
+
 # ------------------------------------------------------------------ text
 def _font(size, font, weight, italic):
     tf, emb, skew = typeface(font, weight, italic)
@@ -436,26 +607,39 @@ def _font(size, font, weight, italic):
     return f
 
 
-def _line_path(f, txt, spacing):
-    glyphs = f.textToGlyphs(txt)
-    widths = f.getWidths(glyphs)
-    p, x = skia.Path(), 0.0
-    for g, w in zip(glyphs, widths):
+def _run(f, txt, spacing, kern=True):
+    """Glyph run -> (glyphs, x positions, advances, total width); kerning from GPOS/kern applied."""
+    glyphs = list(f.textToGlyphs(txt))
+    widths = list(f.getWidths(glyphs))
+    xs, x = [], 0.0
+    subs, upem = kern_pairs(f.getTypeface()) if kern and len(glyphs) > 1 else ((), 1)
+    k = f.getSize() / upem
+    for i, (g, w) in enumerate(zip(glyphs, widths)):
+        if subs and i:
+            x += _kern(subs, glyphs[i - 1], g) * k
+        xs.append(x)
+        x += w + spacing
+    return glyphs, xs, widths, (x - spacing if glyphs else 0.0)
+
+
+def _line_path(f, txt, spacing, kern=True):
+    glyphs, xs, _, total = _run(f, txt, spacing, kern)
+    p = skia.Path()
+    for g, x in zip(glyphs, xs):
         gp = f.getPath(g)
         if gp is not None and not gp.isEmpty():
             p.addPath(gp, x, 0)
-        x += w + spacing
-    return p, (x - spacing if glyphs else 0.0)
+    return p, total
 
 
 def text_shape(txt, x, y, size=32, font="sans", weight="regular", align="left", valign="baseline",
-               spacing=0.0, line_height=1.2, italic=False, fit=None):
+               spacing=0.0, line_height=1.2, italic=False, fit=None, kern=True):
     """Text as a Shape. align: left|center|right; valign: baseline|top|middle|bottom (cap-height based);
-    spacing = extra letter spacing in em; fit = target width in px (sets size)."""
+    spacing = extra letter spacing in em; fit = target width in px (sets size); kern = font pair kerning."""
     lines = str(txt).split("\n")
     f = _font(size, font, weight, italic)
     if fit:
-        widest = max(_line_path(f, ln, spacing * size)[1] for ln in lines) or 1
+        widest = max(_line_path(f, ln, spacing * size, kern)[1] for ln in lines) or 1
         size = size * fit / widest
         f = _font(size, font, weight, italic)
     sp = spacing * size
@@ -466,16 +650,172 @@ def text_shape(txt, x, y, size=32, font="sans", weight="regular", align="left", 
     oy = {"baseline": 0.0, "top": cap, "middle": cap - block / 2, "bottom": cap - block}[valign]
     out = skia.Path()
     for i, ln in enumerate(lines):
-        p, w = _line_path(f, ln, sp)
+        p, w = _line_path(f, ln, sp, kern)
         dx = {"left": 0.0, "center": -w / 2, "right": -w}[align]
         out.addPath(p, x + dx, y + oy + i * lh)
     return Shape(out)
 
 
-def text_size(txt, size=32, font="sans", weight="regular", spacing=0.0, italic=False):
+def text_size(txt, size=32, font="sans", weight="regular", spacing=0.0, italic=False, kern=True):
     """(width, cap_height) of single-line text in px."""
     f = _font(size, font, weight, italic)
-    return _line_path(f, txt, spacing * size)[1], f.getMetrics().fCapHeight
+    return _line_path(f, txt, spacing * size, kern)[1], f.getMetrics().fCapHeight
+
+
+def _path_of(path):
+    if isinstance(path, Shape):
+        return path.path
+    if isinstance(path, skia.Path):
+        return path
+    return spline(path).path
+
+
+def text_on_path(txt, path, size=32, font="sans", weight="regular", offset=0.0, align="left", lift=0.0,
+                 spacing=0.0, italic=False, kern=True, fit=False):
+    """Text set along a path (Shape, skia.Path or points -> smooth spline), glyphs rotated to the tangent.
+    offset = extra distance along the path in px; align: left|center|right within the path length;
+    lift = baseline shift in px (positive = to the left of the travel direction, i.e. above a
+    left-to-right path). Glyphs past either end are dropped. fit=True spreads the letter spacing so the
+    text spans the whole path (closed rings: end the text with a separator such as '  ·  ')."""
+    f = _font(size, font, weight, italic)
+    pm = skia.PathMeasure(_path_of(path), False)
+    L = pm.getLength() - offset
+    glyphs, xs, ws, total = _run(f, str(txt), spacing * size, kern)
+    if fit and len(glyphs) > 1:
+        glyphs, xs, ws, total = _run(f, str(txt), spacing * size + (L - total - ws[-1] * .5) / len(glyphs), kern)
+    L += offset
+    d0 = offset + {"left": 0.0, "center": (L - total) / 2, "right": L - total}[align]
+    out = skia.Path()
+    for g, x, w in zip(glyphs, xs, ws):
+        mid = d0 + x + w / 2
+        if mid < 0 or mid > L:
+            continue
+        gp = f.getPath(g)
+        if gp is None or gp.isEmpty():
+            continue
+        pos, tan = pm.getPosTan(float(mid))
+        tx, ty = tan.x(), tan.y()
+        m = skia.Matrix()
+        m.setAll(tx, -ty, pos.x() + ty * lift, ty, tx, pos.y() - tx * lift, 0, 0, 1)
+        m.preTranslate(-w / 2, 0)
+        q = skia.Path(gp)
+        q.transform(m)
+        out.addPath(q)
+    return Shape(out)
+
+
+_RICH = re.compile(r"(\*\*|\*|\[/\]|\[[^\]/]+\])")
+
+
+def _rich(txt):
+    """Markup -> [(text, bold, italic, colour|None)]: **bold**, *italic*, [colour]text[/]."""
+    out, b, it, col = [], False, False, []
+    for tok in _RICH.split(str(txt)):
+        if tok == "**":
+            b = not b
+        elif tok == "*":
+            it = not it
+        elif tok == "[/]":
+            col = col[:-1]
+        elif len(tok) > 2 and tok[0] == "[" and tok[-1] == "]":
+            col.append(tok[1:-1])
+        elif tok:
+            out.append((tok, b, it, col[-1] if col else None))
+    return out
+
+
+def _bold_of(weight):
+    w = WEIGHTS.get(weight, weight) if isinstance(weight, str) else int(weight)
+    return 700 if w < 600 else 900
+
+
+def _box_layout(txt, w, size, font, weight, align, line_height, spacing, kern, rich):
+    """Greedy word wrap -> (items [(path, x, y, colour)], n_lines, height, a word overflows w)."""
+    fonts = {}
+
+    def fnt(b, it):
+        if (b, it) not in fonts:
+            fonts[(b, it)] = _font(size, font, _bold_of(weight) if b else weight, it)
+        return fonts[(b, it)]
+
+    f0 = fnt(False, False)
+    sp = spacing * size
+    space = f0.getWidths(f0.textToGlyphs(" "))[0] + sp
+    cap = f0.getMetrics().fCapHeight or size * 0.7
+    lh = line_height * size
+    runs = _rich(txt) if rich else [(str(txt), False, False, None)]
+    paras, words, cur = [], [], []
+    for text, b, it, col in runs:  # paragraphs -> words -> pieces (path, width, colour)
+        for chunk in re.split(r"(\n|\s+)", text):
+            if chunk == "\n" or (chunk and chunk.isspace()):
+                if cur:
+                    words.append(cur)
+                cur = []
+                if "\n" in chunk:
+                    paras.append(words)
+                    words = []
+            elif chunk:
+                p, wd = _line_path(fnt(b, it), chunk, sp, kern)
+                cur.append((p, wd, col))
+    if cur:
+        words.append(cur)
+    paras.append(words)
+    out, y, nl, over = [], cap, 0, False
+    for words in paras:
+        lines, ln, lw = [], [], 0.0
+        for wd in words:
+            ww = sum(q[1] for q in wd)
+            over |= ww > w + 0.5
+            if ln and lw + space + ww > w:
+                lines.append((ln, lw))
+                ln, lw = [], 0.0
+            lw += (space if ln else 0.0) + ww
+            ln.append((wd, ww))
+        lines.append((ln, lw))
+        for li, (ln, lw) in enumerate(lines):
+            gap, x = space, 0.0
+            if align == "justify" and li < len(lines) - 1 and len(ln) > 1:
+                gap = space + (w - lw) / (len(ln) - 1)
+            elif align == "center":
+                x = (w - lw) / 2
+            elif align == "right":
+                x = w - lw
+            for wd, ww in ln:
+                xx = x
+                for p, pw, col in wd:
+                    out.append((p, xx, y, col))
+                    xx += pw
+                x += ww + gap
+            y += lh
+            nl += 1
+    return out, nl, cap + lh * (nl - 1) + 0.28 * size, over
+
+
+def text_box(txt, x, y, w, h=None, size=18, font="sans", weight="regular", align="left", line_height=1.4,
+             spacing=0.0, fit=False, kern=True, rich=True, min_size=4.0):
+    """Paragraphs word-wrapped into width w from top-left (x, y); '\\n' starts a new paragraph.
+    align: left|right|center|justify (last line of a paragraph stays left); fit=True (needs h) shrinks
+    size until the text fits the box. rich markup: **bold**, *italic*, [#c33]coloured[/].
+    -> Shape with .runs [(colour|None, Shape)], .size (final size), .lines, .height (px)."""
+    args = (font, weight, align, line_height, spacing, kern, rich)
+    if fit and h:
+        lay = _box_layout(txt, w, size, *args)
+        if lay[2] > h or lay[3]:
+            lo, hi = float(min_size), float(size)
+            for _ in range(14):
+                mid = (lo + hi) / 2
+                lay = _box_layout(txt, w, mid, *args)
+                lo, hi = (lo, mid) if (lay[2] > h or lay[3]) else (mid, hi)
+            size = lo
+    items, nl, height, _ = _box_layout(txt, w, size, *args)
+    groups, allp = {}, skia.Path()
+    for p, px, py, col in items:
+        groups.setdefault(col, skia.Path()).addPath(p, x + px, y + py)
+        allp.addPath(p, x + px, y + py)
+    sh = Shape(allp)
+    sh.runs = [(k, Shape(v)) for k, v in groups.items()]
+    sh.size, sh.lines, sh.height = size, nl, height
+    return sh
 
 
 # ------------------------------------------------------------------ drawing on layers
@@ -530,9 +870,67 @@ def _m_path(self, d, **st):
 
 
 def _m_text(self, txt, x, y, size=32, fill="black", font="sans", weight="regular", align="left",
-            valign="baseline", spacing=0.0, line_height=1.2, italic=False, fit=None, **st):
-    sh = text_shape(txt, x, y, size, font, weight, align, valign, spacing, line_height, italic, fit)
+            valign="baseline", spacing=0.0, line_height=1.2, italic=False, fit=None, kern=True, **st):
+    sh = text_shape(txt, x, y, size, font, weight, align, valign, spacing, line_height, italic, fit, kern)
     return self.draw(sh, fill=fill, **st)
+
+
+def _m_text_on_path(self, txt, path, size=32, fill="black", font="sans", weight="regular", offset=0.0,
+                    align="left", lift=0.0, spacing=0.0, italic=False, kern=True, fit=False, **st):
+    sh = text_on_path(txt, path, size, font, weight, offset, align, lift, spacing, italic, kern, fit)
+    return self.draw(sh, fill=fill, **st)
+
+
+def _m_text_box(self, txt, x, y, w, h=None, size=18, fill="black", font="sans", weight="regular",
+                align="left", line_height=1.4, spacing=0.0, fit=False, kern=True, rich=True, **st):
+    sh = text_box(txt, x, y, w, h, size, font, weight, align, line_height, spacing, fit, kern, rich)
+    for col, part in sh.runs:
+        self.draw(part, fill=fill if col is None else col, **st)
+    return sh
+
+
+def _darker(col, k=0.55):
+    from .core import color as _color
+    c = _color(col)
+    return tuple(float(v) * k for v in c[:3])
+
+
+def title(self, txt, x, y, size=96, style="shadow", fill="black", color2=None, depth=None, **kw):
+    """Display-type presets (kw -> text_shape: font, weight, align, valign, spacing, fit, kern...).
+    style: 'shadow' (hard offset shadow) | 'extrude' (3D block) | 'outline' (hollow letters) |
+    'inline' (filled + inner line) | 'neon' (outline + glow). color2 = shadow / line colour.
+    depth = shadow offset in px (default 6% of size)."""
+    kw.setdefault("weight", "black" if style == "inline" else "bold")
+    sh = text_shape(txt, x, y, size, **kw)
+    d = size * 0.06 if depth is None else depth
+    if style == "shadow":
+        self.draw(sh.move(d, d), fill=color2 or "#00000066")
+        self.draw(sh, fill=fill)
+    elif style == "extrude":
+        c2 = color2 or _darker(fill)
+        n = max(2, int(d * self.s * 1.5))
+        steps = skia.Path()
+        for i in range(1, n + 1):
+            steps.addPath(sh.path, d * i / n, d * i / n)
+        self.draw(Shape(skia.Simplify(steps) or steps), fill=c2)
+        self.draw(sh, fill=fill)
+    elif style == "outline":
+        self.draw(sh, fill=None, stroke=fill, width=max(1.0, size * 0.035), join="miter")
+    elif style == "inline":
+        inset = max(1.0, size * 0.03)
+        self.draw(sh, fill=fill)
+        core = Shape(skia.Op(sh.path, _stroke(sh.path, 2 * inset, "round", "round"), skia.PathOp.kDifference_PathOp))
+        self.draw(core, fill=None, stroke=color2 or "white", width=max(0.8, size * 0.014))
+    elif style == "neon":
+        from .fx import glow
+        L = self.canvas.layer(blend="screen")
+        L.draw(sh, fill=None, stroke=fill, width=max(1.0, size * 0.03))
+        L.apply(glow(size * 0.12, 1.2, color2 or fill))
+        L.draw(sh, fill=None, stroke="white", width=max(0.6, size * 0.01))
+        self.canvas.use(self)  # back to the caller's layer
+    else:
+        raise ValueError("title style: shadow | extrude | outline | inline | neon")
+    return sh
 
 
 Layer.draw = draw
@@ -544,6 +942,10 @@ Layer.line = _m_line
 Layer.spline = _m_spline
 Layer.path = _m_path
 Layer.text = _m_text
+Layer.text_on_path = _m_text_on_path
+Layer.text_box = _m_text_box
+Layer.title = title
 
 __all__ = ["Shape", "union", "rect", "ellipse", "circle", "polygon", "line", "regular", "star", "arc", "spline",
-           "svg", "text_shape", "text_size", "typeface", "fonts", "WEIGHTS"]
+           "svg", "text_shape", "text_size", "text_on_path", "text_box", "kern_pairs", "kern_value", "typeface",
+           "fonts", "WEIGHTS"]

@@ -442,7 +442,11 @@ class Canvas:
         s = 1.0
         if not pixel:
             if CONFIG.get("width"):
-                s = CONFIG["width"] / w
+                # the first canvas of a scene fixes the preview scale; helper canvases created later
+                # (sub-renders, tiles) reuse it instead of each being blown up to the preview width
+                if CONFIG.get("_width_scale") is None:
+                    CONFIG["_width_scale"] = CONFIG["width"] / w
+                s = CONFIG["_width_scale"]
             elif CONFIG.get("scale"):
                 s = float(CONFIG["scale"])
         self.s = s

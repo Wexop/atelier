@@ -1,9 +1,12 @@
 # atelier
 
 A procedural image studio designed to be driven by an LLM: short Python scripts produce PNG/JPG/WebP images in any
-style (photoreal 3D, oil and watercolour painting, flat posters, pixel art, generative abstracts) with **no generative
-AI and no image API**. Everything is computed: noise fields, vector shapes, a brush engine, effects and a small
-SDF raymarcher, all on the CPU.
+style (photoreal 3D, oil and watercolour painting, comics and engravings, people, landscapes, posters and typography,
+pixel art, generative abstracts) with **no generative AI and no image API**. Everything is computed on the CPU:
+noise fields, vector shapes, a brush engine, effects, an SDF path tracer, terrain erosion, a physical sky, posable
+figures, and tools that let the LLM inspect its own renders.
+
+Website: <https://atelier.wexop.eu> · every image below was made by atelier from a script in [examples/](examples).
 
 ![gallery](examples/gallery.jpg)
 
@@ -59,6 +62,7 @@ c.save("night.png")
 
 ```bash
 atelier render night.py --preview          # fast 512 px look -> night_prev.jpg
+atelier inspect night.py                   # contact sheet: value study, clipping, auto zooms on defects, metrics
 atelier render night.py --crop 600,500,300,200   # full-res zoom on a region
 atelier render night.py                    # final render
 ```
@@ -69,11 +73,16 @@ atelier render night.py                    # final render
 |---|---|
 | `core` | canvas, layers, 17 blend modes, masks, image import, export, previews |
 | `field` | lazy procedural fields: perlin/simplex/value, fbm, ridged, worley, domain warp, patterns, gradients, palettes, 2.5D shading |
-| `vector` | skia shapes, SVG paths, booleans, strokes/dashes, text with embedded fonts (Inter, JetBrains Mono) |
+| `vector` | skia shapes, SVG paths, booleans, strokes/dashes, text with embedded fonts and GPOS kerning, text on a path, justified text boxes, title presets |
 | `brush` | stroke engine (round, ink, chalk, bristle, oil with impasto, watercolour with glazing), scatter, hatching, pigment mixing, `paint_like` |
 | `fx` | blur, bloom, glow, shadows, grading (curves, levels, colour balance, AgX), grain, halftone, pixelate + dithering, depth of field |
-| `sdf` | 3D signed-distance primitives and ops, PBR-ish materials, glass, subsurface, soft shadows, AO, reflections, fog |
-| `cli` | `atelier render / palette / brushes / fx` |
+| `sdf` | 3D signed-distance primitives and ops, materials (bump, object-space textures, wear: smudges, scratches, dust, edge wear), fast raymarcher |
+| `pt` | progressive path tracer: global illumination, multi-refraction glass and liquids, adaptive anti-aliasing, AOV-guided denoiser |
+| `stylize` | 3D → illustration (toon shading, ink outlines, halftone shadows, surface-following hatching), Kuwahara, XDoG, pencil, watercolour, linocut, stained glass, mosaic |
+| `terrain` · `nature` | eroded terrain, physical sky and raymarched clouds, aerial perspective, lakes and seas (FFT waves), 2D and 3D trees, grass, flowers, ferns |
+| `figure` | posable people (15 poses, outfits, hair, body types) and animals in flat, line, ink or 3D mannequin styles; perspective crowds |
+| `inspect` | quality metrics (noise, aliasing, banding, clipping), contact sheets, A/B compare, composition guides, reference palette and tone transfer |
+| `cli` | `atelier render / inspect / compare / reference / palette / brushes / fx` |
 
 The full API cheat sheet (made for an LLM) is [SKILL.md](SKILL.md). Gallery scripts are in [examples/](examples).
 

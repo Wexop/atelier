@@ -78,17 +78,12 @@ def _catmull(P, sub=12):
         t = np.linspace(0, 1, sub + 1)[:, None]
         return P[0] + (P[1] - P[0]) * t, np.linspace(0, 1, sub + 1).astype(F32)
     Q = np.vstack([2 * P[0] - P[1], P, 2 * P[-1] - P[-2]])
-    t = np.linspace(0, 1, sub, endpoint=False)[:, None]
+    t = np.linspace(0, 1, sub, endpoint=False)[None, :, None]
     t2, t3 = t * t, t * t * t
-    out, us = [], []
-    for i in range(n - 1):
-        p0, p1, p2, p3 = Q[i], Q[i + 1], Q[i + 2], Q[i + 3]
-        seg = 0.5 * ((2 * p1) + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3)
-        out.append(seg)
-        us.append(i + t[:, 0])
-    out.append(P[-1:])
-    us.append([n - 1])
-    return np.vstack(out), np.concatenate(us).astype(F32)
+    p0, p1, p2, p3 = (Q[i:i + n - 1, None] for i in range(4))           # all segments at once
+    seg = 0.5 * ((2 * p1) + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3)
+    us = (np.arange(n - 1)[:, None] + t[0, :, 0][None]).ravel()
+    return np.vstack([seg.reshape(-1, 2), P[-1:]]), np.append(us, n - 1).astype(F32)
 
 
 def _resample(points, step):
@@ -142,10 +137,15 @@ def _box(xy, r, pad, W, H):
     return max(0, x0), max(0, y0), min(W, x1), min(H, y1)
 
 
+_KINDS = {"a8": lambda w, h: skia.ImageInfo.MakeA8(w, h),
+          "rgba": lambda w, h: skia.ImageInfo.MakeN32Premul(w, h),
+          "f16": lambda w, h: skia.ImageInfo.Make(w, h, skia.ColorType.kRGBA_F16_ColorType,
+                                                  skia.AlphaType.kPremul_AlphaType)}
+
+
 def _surface(box, kind="a8"):
     w, h = box[2] - box[0], box[3] - box[1]
-    info = skia.ImageInfo.MakeA8(w, h) if kind == "a8" else skia.ImageInfo.MakeN32Premul(w, h)
-    s = skia.Surface.MakeRaster(info)
+    s = skia.Surface.MakeRaster(_KINDS[kind](w, h))
     c = s.getCanvas()
     c.translate(-box[0], -box[1])
     return s, c
@@ -156,16 +156,86 @@ def _read(surf, kind="a8"):
     if kind == "a8":
         a = img.toarray(colorType=skia.kAlpha_8_ColorType)
         return (a[..., 0] if a.ndim == 3 else a).astype(F32) * F32(1 / 255)
+    if kind == "f16":
+        return img.toarray(colorType=skia.kRGBA_F32_ColorType, alphaType=skia.kPremul_AlphaType)
     a = img.toarray(colorType=skia.kRGBA_8888_ColorType, alphaType=skia.kPremul_AlphaType)
     return a.astype(F32) * F32(1 / 255)
+
+
+def _path(pts, verbs, weights=None):
+    """skia.Path from numpy points (k,2) + verb codes (0 move 1 line 3 conic 5 close) in one call
+    (deserialises SkPath's binary layout: far faster than per-point Python calls)."""
+    pts = np.ascontiguousarray(pts, np.float32).reshape(-1, 2)
+    w = np.zeros(0, np.float32) if weights is None else np.ascontiguousarray(weights, np.float32)
+    verbs = np.ascontiguousarray(verbs, np.uint8)
+    blob = np.array([5, len(pts), len(w), len(verbs)], np.uint32).tobytes() + pts.tobytes() + w.tobytes() + \
+        verbs.tobytes()
+    blob += b"\0" * (-len(blob) % 4)
+    p = skia.Path()
+    if len(verbs) and not p.readFromMemory(blob):
+        raise RuntimeError("path deserialisation failed")
+    return p
+
+
+_CIRCLE_VERBS = np.array([0, 3, 3, 3, 3, 5], np.uint8)
+_CIRCLE_K = np.array([[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1], [1, 0]], np.float32)
+
+
+def _circles(xy, r):
+    """One path holding a circle per (x, y, r) (4 conics each)."""
+    pts = np.asarray(xy, np.float32)[:, None] + _CIRCLE_K[None] * np.asarray(r, np.float32)[:, None, None]
+    n = len(pts)
+    return _path(pts, np.tile(_CIRCLE_VERBS, n), np.full(4 * n, math.sqrt(0.5), np.float32))
+
+
+def _polygon(pts):
+    n = len(pts)
+    v = np.ones(n + 1, np.uint8)
+    v[0], v[-1] = 0, 5
+    return _path(pts, v)
+
+
+def _ribbons(L, R, seg, n=1, S=1):
+    """Ribbon polygons: one per run of True seg[j, i] (left edge L forward, right edge R back).
+    L, R: (S*n, m, 2) for S strokes of n bristles; seg: (S*n, m-1), segment i joins points i, i+1.
+    Returns points, verbs and per-stroke cut indices into both (for slicing one path per stroke)."""
+    d = np.diff(np.pad(seg.astype(np.int8), ((0, 0), (1, 1))), axis=1)
+    js, a = np.nonzero(d == 1)
+    e = np.nonzero(d == -1)[1]                    # last point index of each run
+    npt = e - a + 1
+    cnt = 2 * npt
+    K, total = len(a), int(cnt.sum())
+    rid = np.repeat(np.arange(K), cnt)
+    i = np.arange(total) - np.repeat(np.cumsum(cnt) - cnt, cnt)
+    fwd = i < npt[rid]
+    col = np.where(fwd, a[rid] + i, e[rid] - (i - npt[rid]))
+    pts = np.where(fwd[:, None], L[js[rid], col], R[js[rid], col])
+    verbs = np.ones(total + K, np.uint8)
+    vs = np.cumsum(cnt) - cnt + np.arange(K)
+    verbs[vs] = 0
+    verbs[vs + cnt] = 5
+    st = js // n
+    pcut = np.concatenate([[0], np.cumsum(np.bincount(st, cnt, S))]).astype(np.int64)
+    vcut = np.concatenate([[0], np.cumsum(np.bincount(st, cnt + 1, S))]).astype(np.int64)
+    return pts, verbs, pcut, vcut
+
+
+def _argb(rgb, a=1.0):
+    """Packed skia colours from (n,3) floats."""
+    c = np.clip(np.round(np.asarray(rgb, np.float64) * 255), 0, 255).astype(np.int64)
+    return ((int(round(a * 255)) << 24) | (c[:, 0] << 16) | (c[:, 1] << 8) | c[:, 2]).tolist()
 
 
 def _dabs(xy, r, box, aa=True, flow=1.0):
     """Coverage of circular dabs (raster px)."""
     surf, cv = _surface(box)
     p = skia.Paint(AntiAlias=aa, Color=skia.Color4f(1, 1, 1, float(flow)))
-    for (x, y), rr in zip(xy, r):
-        cv.drawCircle(float(x), float(y), float(max(rr, 0.35)), p)
+    r = np.maximum(r, 0.35)
+    if flow >= 1:   # overlaps do not accumulate: one path
+        cv.drawPath(_circles(xy, r), p)
+    else:
+        for (x, y), rr in zip(xy.tolist(), r.tolist()):
+            cv.drawCircle(x, y, rr, p)
     return _read(surf)
 
 
@@ -225,105 +295,157 @@ def _tip_chalk(layer, xy, r, P, col, box, opacity, flow, seed):
     layer.paint(cov * k * opacity, col, box)
 
 
-def _bristle_paths(xy, r, tan, P, rng, s):
-    """Polylines for each bristle (raster px) with per-bristle offset, width, gaps."""
-    n = P.get("n", 14)
-    nrm = np.stack([-tan[:, 1], tan[:, 0]], 1)
-    offs = ((np.arange(n) + 0.5) / n * 2 - 1 + rng.uniform(-0.5, 0.5, n) / n) * 0.95  # stratified
-    widths = rng.uniform(0.7, 1.3, n)
-    gaps = P.get("gaps", 0.2)
-    m = len(xy)
-    lines = xy[None] + nrm[None] * (offs[:, None] * r[None])[..., None]          # (n, m, 2)
+def _bristle_draw(layer, xs, rs, tns, base, rng, P, opacity):
+    """Paint S bristle strokes (in order) on shared skia surfaces, then pick up wet paint, composite
+    and lay impasto once for the batch. xs (S,M,2) coarse centre line in raster px, rs (S,M) radius,
+    tns (S,M,2) unit tangents, base (S,3) colours; random tip data from rng."""
+    S, M = rs.shape
+    pad = float(rs.max()) * 0.6 + 4
+    box = (max(0, int(math.floor(float((xs[..., 0] - rs).min()) - pad))),
+           max(0, int(math.floor(float((xs[..., 1] - rs).min()) - pad))),
+           min(layer.W, int(math.ceil(float((xs[..., 0] + rs).max()) + pad))),
+           min(layer.H, int(math.ceil(float((xs[..., 1] + rs).max()) + pad))))
+    if box[0] >= box[2] or box[1] >= box[3]:
+        return
+    x0, y0, x1, y1 = box
+    aa = layer.aa
+    n, var, body, gaps = P.get("n", 14), P.get("var", 0.08), P.get("body", 0.85), P.get("gaps", 0.2)
+    pickup, imp = P.get("pickup", 0.0), P.get("impasto", 0.0)
+    # --- bristle geometry for all strokes at once
+    nrm = np.stack([-tns[..., 1], tns[..., 0]], -1)                                     # (S, M, 2)
+    offs = ((np.arange(n) + 0.5) / n * 2 - 1 + rng.uniform(-0.5, 0.5, (S, n)) / n) * 0.95  # stratified
+    widths = rng.uniform(0.7, 1.3, (S, n))
+    lines = xs[:, None] + nrm[:, None] * (offs[..., None] * rs[:, None])[..., None]    # (S, n, M, 2)
     # paint runs out near the end / random gaps on outer bristles (smoothed noise, window 3)
-    z = rng.standard_normal((n, m + 2))
-    noise = (z[:, :-2] + z[:, 1:-1] + z[:, 2:]) / 1.732
-    dry = (np.linspace(0, 1, m) ** 2)[None] * gaps * 2 + np.abs(offs)[:, None] * gaps
+    z = rng.standard_normal((S, n, M + 2))
+    noise = (z[..., :-2] + z[..., 1:-1] + z[..., 2:]) / 1.732
+    dry = (np.linspace(0, 1, M) ** 2)[None, None] * gaps * 2 + np.abs(offs)[..., None] * gaps
     on = noise > (dry - 0.5) * 2.5 - 1.2 + gaps * 1.5
-    return [(lines[j], on[j], widths[j]) for j in range(n)], offs
-
-
-def _poly(pts):
-    p = skia.Path()
-    p.addPoly([skia.Point(float(x), float(y)) for x, y in pts], False)
-    return p
-
-
-def _tip_bristle(layer, xy, r, P, col, box, opacity, flow, seed, tan=None, t=None):
-    rng = np.random.default_rng(seed)
-    base = np.asarray(col, F32)[:3] if isinstance(col, np.ndarray) else color(col)[:3]
-    # bristles only need a coarse polyline (the spline is already smooth)
-    k = max(1, len(xy) // 24)
-    sel = np.unique(np.r_[np.arange(0, len(xy), k), len(xy) - 1])
-    xs, rs, ts, tns = xy[sel], r[sel], t[sel], tan[sel]
-    paths, offs = _bristle_paths(xs, rs, tns, P, rng, layer.s)
-    n = len(paths)
-    rb = np.maximum(rs * 2 / n * 1.9, 0.6)
-    surf, cv = _surface(box, "rgba")
-    var = P.get("var", 0.08)
-    body = P.get("body", 0.85)
-    if body > 0:  # paint film under the bristle streaks (one polygon following the width)
-        nrm = np.stack([-tns[:, 1], tns[:, 0]], 1) * (rs * 0.82)[:, None]
-        outline = np.vstack([xs + nrm, (xs - nrm)[::-1]])
-        bp = skia.Paint(AntiAlias=layer.aa, Color=skia.Color4f(float(base[0]), float(base[1]), float(base[2]),
-                                                               float(body * 0.35)))
-        poly = _poly(outline)
-        poly.close()
-        cv.drawPath(poly, bp)
-    hsv = rgb2hsv(base[None])[0] + rng.normal(0, 1, (n, 3)) * np.array([var * 0.15, var * 0.6, var], F32)
+    hsv = rgb2hsv(base)[:, None] + rng.normal(0, 1, (S, n, 3)) * np.array([var * 0.15, var * 0.6, var], F32)
     cols = np.clip(hsv2rgb(hsv), 0, 1)
-    paint = skia.Paint(AntiAlias=layer.aa, Style=skia.Paint.kStroke_Style, StrokeCap=skia.Paint.kRound_Cap,
-                       StrokeJoin=skia.Paint.kRound_Join)
-    for j, (line, on, wj) in enumerate(paths):
-        cj = cols[j]
-        paint.setColor(skia.Color4f(float(cj[0]), float(cj[1]), float(cj[2]), 1.0))
-        # split into runs where the bristle touches the canvas
-        idx = np.flatnonzero(np.diff(np.concatenate([[0], on.astype(np.int8), [0]])))
-        for a, b in zip(idx[::2], idx[1::2]):
-            if b - a < 2:
-                continue
-            w = float(np.mean(rb[a:b]) * wj)
-            paint.setStrokeWidth(w)
-            cv.drawPath(_poly(line[a:b]), paint)
+    rb = np.maximum(rs * 2 / n * 1.9, 0.6)
+    hw = (rb[:, None] * widths[..., None] * 0.5)[..., None]                            # (S, n, M, 1)
+    seg = (on[..., :-1] & on[..., 1:]).reshape(S * n, M - 1)
+    rp, rv, pcut, vcut = _ribbons((lines + nrm[:, None] * hw).reshape(S * n, M, 2),
+                                  (lines - nrm[:, None] * hw).reshape(S * n, M, 2), seg, n, S)
+    nb = nrm * (rs * 0.82)[..., None]
+    outline = np.concatenate([xs + nb, (xs - nb)[:, ::-1]], 1)                          # (S, 2M, 2)
+    pverbs = np.ones(2 * M + 1, np.uint8)
+    pverbs[0], pverbs[-1] = 0, 5
+    im = M // 2
+    gA = (xs[:, im] - nrm[:, im] * (rs[:, im] * 0.95)[:, None]).tolist()
+    gB = (xs[:, im] + nrm[:, im] * (rs[:, im] * 0.95)[:, None]).tolist()
+    pos = np.clip((offs / 0.95 + 1) / 2, 1e-3, 1 - 1e-3)
+    pos = np.maximum.accumulate(pos + np.arange(n) * 1e-6, axis=1).tolist()
+    argb = np.array(_argb(cols.reshape(-1, 3))).reshape(S, n)
+    argb = np.concatenate([argb[:, :1], argb, argb[:, -1:]], 1).tolist()
+    bcol = np.clip(base, 0, 1).tolist()
+    ends = np.stack([xs[:, 0], xs[:, -1]], 1).tolist()
+    # --- surfaces
+    surf, cv = _surface(box, "rgba")
+    tcv = hcv = None
+    if pickup > 0 and imp <= 0:      # with impasto the t map rides in the height surface (green channel)
+        tsurf, tcv = _surface(box, "rgba")
+        nw = nrm * (rs * 1.05)[..., None]
+        tout = np.concatenate([xs + nw, (xs - nw)[:, ::-1]], 1)
+    rmed = np.median(rs, 1)
+    if imp > 0:
+        hsurf, hcv = _surface(box, "f16")
+        vmax = float(rmed.max()) * 1.7 * max(imp, 1.0)       # height values stored as fractions of vmax
+        v = imp * rmed / vmax
+        hcols = [np.array(_argb(np.stack([np.stack([v * 1.2 * g, 0 * v, 0 * v], 1),
+                                          np.stack([v * 0.6 * g, 1 + 0 * v, 0 * v], 1)], 1).reshape(-1, 3),
+                                0.8)).reshape(S, 2).tolist() for g in (1.0, 1.4)]
+    bp, gp = skia.Paint(AntiAlias=aa), skia.Paint(AntiAlias=aa)
+    tp = skia.Paint(AntiAlias=False)
+    hp = skia.Paint(AntiAlias=False)        # height is blurred afterwards
+    lin = skia.GradientShader.MakeLinear
+    for i in range(S):
+        body_path = _path(outline[i], pverbs) if body > 0 else None
+        if body_path is not None:     # paint film under the bristle streaks (follows the width)
+            b = bcol[i]
+            bp.setColor(skia.Color4f(b[0], b[1], b[2], body * 0.35))
+            cv.drawPath(body_path, bp)
+        bpath = None
+        if vcut[i + 1] > vcut[i]:
+            bpath = _path(rp[pcut[i]:pcut[i + 1]], rv[vcut[i]:vcut[i + 1]])
+            # per-bristle colour: a gradient across the stroke with one stop per bristle
+            gp.setShader(lin([skia.Point(*gA[i]), skia.Point(*gB[i])], argb[i], [0.0] + pos[i] + [1.0]))
+            cv.drawPath(bpath, gp)
+        p0, p1 = skia.Point(*ends[i][0]), skia.Point(*ends[i][1])
+        if tcv is not None:          # arc-length parameter map (later strokes overwrite earlier ones)
+            tp.setShader(lin([p0, p1], [0xFF000000, 0xFFFFFFFF]))
+            tcv.drawPath(_path(tout[i], pverbs), tp)
+        if hcv is not None:          # paint thickness: loaded at the start, ridges where bristles lay paint
+            for path, hc in ((body_path, hcols[0][i]), (bpath, hcols[1][i])):
+                if path is not None:
+                    hp.setShader(lin([p0, p1], hc))
+                    hcv.drawPath(path, hp)
     pm = _read(surf, "rgba")
     cov = pm[..., 3]
+    if not cov.any():
+        return
     rgb = pm[..., :3] / np.maximum(cov[..., None], 1e-4)
-    pickup = P.get("pickup", 0.0)
-    tmap = None
-    if pickup > 0 or P.get("impasto", 0) > 0:  # smooth: dab steps would show up in the relief
-        tmap = cv2.GaussianBlur(_param_map(xs, rs, ts, box, layer.aa), (0, 0), max(1.0, float(np.median(rs)) * 0.6))
-    if pickup > 0:
+    rm = float(np.median(rmed))
+    hpm = _read(hsurf, "f16") if imp > 0 else None
+    if pickup > 0:   # brush picks up wet paint it passes over; more as it runs dry (along t)
+        tmap = hpm[..., 1] / np.maximum(hpm[..., 3], 1e-3) if imp > 0 else _read(tsurf, "rgba")[..., 0]
+        tmap = cv2.GaussianBlur(tmap, (0, 0), max(1.0, rm * 0.6))
         under, ua = _under(layer, box)
-        # brush picks up wet paint it passes over; more as it runs dry (along t)
-        amt = (pickup * (0.4 + 0.6 * tmap) * ua)
-        rgb = km_mix(rgb, under, amt)
+        rgb = km_mix(rgb, under, pickup * (0.4 + 0.6 * tmap) * ua)
     out = np.concatenate([rgb * cov[..., None], cov[..., None]], -1)
     _paint_rgba(layer, out, box, opacity)
-    imp = P.get("impasto", 0.0)
     if imp > 0:
-        bo = body * 0.35
-        ridge = np.clip((cov - bo) / (1 - bo), 0, 1)       # where bristles laid paint over the film
+        hpm = cv2.GaussianBlur(np.ascontiguousarray(hpm[..., [0, 3]]), (0, 0), max(0.6, 0.5 * layer.s))
         if layer.height is None:
             layer.height = np.zeros((layer.H, layer.W), F32)
-        x0, y0, x1, y1 = box
         h = layer.height[y0:y1, x0:x1]
-        ridge = cv2.GaussianBlur(ridge, (0, 0), max(0.6, 0.5 * layer.s))
-        soft = cv2.GaussianBlur(cov, (0, 0), max(1.0, float(np.median(r)) * 0.25))
-        thick = imp * soft * (1.0 + 0.4 * ridge) * float(np.median(r)) / layer.s * 0.04
-        thick = thick * (1.2 - 0.6 * tmap)
-        layer.height[y0:y1, x0:x1] = h * (1 - soft * 0.8) + thick
+        h *= 1 - hpm[..., 1]
+        h += hpm[..., 0] * F32(vmax / layer.s * 0.04 / 0.8)
         layer.touch()
 
 
-def _param_map(xy, r, t, box, aa):
-    """Per-pixel arc-length fraction of the stroke (later dabs overwrite earlier ones)."""
+def _coarse(pts, npts, M, sub=8):
+    """Vectorised Catmull-Rom + uniform arc-length resampling of S polylines (padded (S, N, 2) with
+    npts >= 2 valid points each) to M points. Returns xy (S, M, 2), unit tangents (S, M, 2)."""
+    S, N = pts.shape[:2]
+    rows = np.arange(S)
+    last, prev = pts[rows, npts - 1], pts[rows, npts - 2]
+    P = np.where((np.arange(N)[None] < npts[:, None])[..., None], pts, last[:, None])   # pad with last
+    E = np.concatenate([2 * P[:, :1] - P[:, 1:2], P, last[:, None]], 1)                 # (S, N+2, 2)
+    E[rows, npts + 1] = 2 * last - prev                                                 # end tangent
+    t = np.linspace(0, 1, sub, endpoint=False)[None, None, :, None]
+    a0, a1, a2, a3 = (E[:, k:k + N - 1, None] for k in range(4))
+    seg = 0.5 * ((2 * a1) + (-a0 + a2) * t + (2 * a0 - 5 * a1 + 4 * a2 - a3) * t * t +
+                 (-a0 + 3 * a1 - 3 * a2 + a3) * t * t * t)                             # (S, N-1, sub, 2)
+    seg = np.where((np.arange(N - 1)[None] < npts[:, None] - 1)[..., None, None], seg, last[:, None, None])
+    dense = np.concatenate([seg.reshape(S, -1, 2), last[:, None]], 1)
+    sl = np.hypot(*np.diff(dense, axis=1).transpose(2, 0, 1))
+    cum = np.concatenate([np.zeros((S, 1)), np.cumsum(sl, 1)], 1)                      # (S, D)
+    d = cum[:, -1:] * np.linspace(0, 1, M)[None]                                        # (S, M)
+    j = np.clip((cum[:, None, :] <= d[..., None]).sum(-1) - 1, 0, cum.shape[1] - 2)
+    c0, c1 = np.take_along_axis(cum, j, 1), np.take_along_axis(cum, j + 1, 1)
+    f = ((d - c0) / np.maximum(c1 - c0, 1e-9))[..., None]
+    x0 = np.take_along_axis(dense, j[..., None].repeat(2, 2), 1)
+    x1 = np.take_along_axis(dense, (j + 1)[..., None].repeat(2, 2), 1)
+    xy = x0 + (x1 - x0) * f
+    tan = np.gradient(xy, axis=1)
+    nt = np.hypot(tan[..., 0], tan[..., 1])[..., None]
+    tan = np.where(nt > 1e-9, tan / np.maximum(nt, 1e-9), np.array([1.0, 0.0]))
+    return xy, tan
+
+
+def _dab_batch(layer, items, opacity):
+    """Hard round dab strokes (flow 1) drawn in order on one RGBA surface. items: (xy, r, rgb, box)."""
+    x0 = min(it[3][0] for it in items); y0 = min(it[3][1] for it in items)
+    x1 = max(it[3][2] for it in items); y1 = max(it[3][3] for it in items)
+    box = (x0, y0, x1, y1)
     surf, cv = _surface(box, "rgba")
-    p = skia.Paint(AntiAlias=False)
-    step = max(1, len(xy) // 256)
-    for i in range(0, len(xy), step):
-        v = float(t[i])
-        p.setColor(skia.Color4f(v, v, v, 1))
-        cv.drawCircle(float(xy[i, 0]), float(xy[i, 1]), float(max(r[i], 0.5) * 1.05), p)
-    return _read(surf, "rgba")[..., 0]
+    p = skia.Paint(AntiAlias=layer.aa)
+    for xy, r, rgb, _ in items:
+        p.setColor(skia.Color4f(float(rgb[0]), float(rgb[1]), float(rgb[2]), 1.0))
+        cv.drawPath(_circles(xy, np.maximum(r, 0.35)), p)
+    _paint_rgba(layer, _read(surf, "rgba"), box, opacity)
 
 
 def _tip_watercolor(layer, xy, r, P, col, box, opacity, flow, seed):
@@ -364,17 +486,17 @@ def _glaze(layer, dens, col, box):
 
 
 # ------------------------------------------------------------------ public: stroke
-def stroke(self, points, brush="round", size=12.0, color="black", pressure=None, opacity=1.0,
-           jitter=0.0, spacing=None, taper=None, seed=0, **kw):
-    """Paint a stroke along a smooth spline through `points` [(x, y), ...] (or a Shape).
-    size = diameter in canvas px; pressure: list (per point), function t->p, or scalar;
-    jitter: dab scatter (fraction of size); taper=(start, end) fractions; extra kw override
-    brush params (soft, flow, n, gaps, pickup, impasto, edge, granulation, bleed, tooth, speed)."""
+def _params(brush, kw):
     if isinstance(brush, str) and brush not in BRUSHES:
         raise ValueError(f"unknown brush '{brush}'. Available: {', '.join(BRUSHES)}")
     P = dict(BRUSHES[brush]) if isinstance(brush, str) else dict(brush)
     P.update(kw)
-    s = self.s
+    return P
+
+
+def _geom(layer, points, P, size, pressure, spacing, taper, jitter, seed):
+    """Resampled stroke in raster px: pts (canvas), xy, t, tan, r, box (None if off-canvas)."""
+    s = layer.s
     pts = _points_of(points)
     step = max(0.3, (spacing or P.get("spacing", 0.1)) * size * s)
     xy, uu, t, tan, L = _resample(pts * s, step)
@@ -384,28 +506,77 @@ def stroke(self, points, brush="round", size=12.0, color="black", pressure=None,
         sp = np.gradient(uu) if len(uu) > 1 else np.ones(1)
         sp = sp / max(np.median(sp), 1e-9)
         r = r * np.clip(1.25 - P["speed"] * (sp - 1) * 0.6, 0.35, 1.4)
-    rng = np.random.default_rng(seed)
     if jitter:
-        xy = xy + rng.normal(0, jitter * size * s * 0.5, xy.shape)
-    pad = r.max() * 0.6 + 4
-    box = _box(xy, r, pad, self.W, self.H)
+        xy = xy + np.random.default_rng(seed).normal(0, jitter * size * s * 0.5, xy.shape)
+    box = _box(xy, r, r.max() * 0.6 + 4, layer.W, layer.H)
     if box[0] >= box[2] or box[1] >= box[3]:
+        box = None
+    return pts, xy, t, tan, r, box
+
+
+def stroke(self, points, brush="round", size=12.0, color="black", pressure=None, opacity=1.0,
+           jitter=0.0, spacing=None, taper=None, seed=0, **kw):
+    """Paint a stroke along a smooth spline through `points` [(x, y), ...] (or a Shape).
+    size = diameter in canvas px; pressure: list (per point), function t->p, or scalar;
+    jitter: dab scatter (fraction of size); taper=(start, end) fractions; extra kw override
+    brush params (soft, flow, n, gaps, pickup, impasto, edge, granulation, bleed, tooth, speed)."""
+    P = _params(brush, kw)
+    pts, xy, t, tan, r, box = _geom(self, points, P, size, pressure, spacing, taper, jitter, seed)
+    if box is None:
         return self
     tip = P["tip"]
     col = color
-    if tip == "bristle" and _is_src(col):  # bristles need one base colour: sample mid-stroke
-        col = _field_at(col, pts[len(pts) // 2:len(pts) // 2 + 1], self)[0]
-    if tip == "dab":
+    if tip == "bristle":
+        if _is_src(col):  # bristles need one base colour: sample mid-stroke
+            col = _field_at(col, pts[len(pts) // 2:len(pts) // 2 + 1], self)[0]
+        k = max(1, len(xy) // 24)       # bristles only need a coarse polyline (the spline is already smooth)
+        sel = np.unique(np.r_[np.arange(0, len(xy), k), len(xy) - 1])
+        if len(sel) < 2:
+            sel = np.array([0, 0])
+        _bristle_draw(self, xy[sel][None], r[sel][None], tan[sel][None], _rgb(col)[None].astype(np.float64),
+                      np.random.default_rng(seed), P, opacity)
+    elif tip == "dab":
         _tip_dab(self, xy, r, P, col, box, opacity, 1.0, seed)
     elif tip == "chalk":
         _tip_chalk(self, xy, r, P, col, box, opacity, 1.0, seed)
-    elif tip == "bristle":
-        _tip_bristle(self, xy, r, P, col, box, opacity, 1.0, seed, tan=tan, t=t)
     elif tip == "watercolor":
         _tip_watercolor(self, xy, r, P, col, box, opacity, 1.0, seed)
     else:
         raise ValueError(f"unknown tip '{tip}'")
     return self
+
+
+def _stroke_batch(layer, pts, npts, sizes, cols, prs, seed, brush, kw):
+    """Paint S strokes in order: pts (S, N, 2) canvas px padded, npts (S,) valid points (>= 2), sizes,
+    cols (S, 3), prs (S,) pressures. Bristle and hard round tips share one surface per batch (geometry
+    vectorised across strokes; wet pickup / impasto computed once for the batch)."""
+    kw = dict(kw)
+    opacity, jitter = kw.pop("opacity", 1.0), kw.pop("jitter", 0.0)
+    spacing, taper = kw.pop("spacing", None), kw.pop("taper", None)
+    P = _params(brush, kw)
+    tip = P["tip"]
+    rng = np.random.default_rng(seed)
+    seeds = rng.integers(1 << 30, size=len(pts))
+    if tip == "bristle" and not jitter and not P.get("speed"):
+        s = layer.s
+        xy, tan = _coarse(pts * s, npts, 20)
+        r = (sizes * s / 2 * prs)[:, None] * _taper(np.linspace(0, 1, 20), taper or P.get("taper", (0, 0)))[None]
+        _bristle_draw(layer, xy, r, tan, np.asarray(cols, np.float64)[:, :3], rng, P, opacity)
+        return
+    if tip == "dab" and P.get("soft", 0) == 0 and P.get("flow", 1.0) >= 1:
+        items = []
+        for i in range(len(pts)):
+            _, xy, t, tan, r, box = _geom(layer, pts[i, :npts[i]], P, sizes[i], prs[i], spacing, taper, jitter,
+                                          int(seeds[i]))
+            if box is not None:
+                items.append((xy, r, np.asarray(cols[i], F32)[:3], box))
+        if items:
+            _dab_batch(layer, items, opacity)
+        return
+    for i in range(len(pts)):
+        layer.stroke(pts[i, :npts[i]], brush, float(sizes[i]), tuple(float(v) for v in cols[i][:3]),
+                     pressure=float(prs[i]), opacity=opacity, jitter=jitter, spacing=spacing, taper=taper,
+                     seed=int(seeds[i]), **kw)
 
 
 def impasto(layer, strength=1.0, light=(135, 45)):
@@ -602,7 +773,7 @@ def hatch(self, region=None, angle=45.0, spacing=8.0, width=1.2, color="black", 
             # each extra set only appears in darker tones
             thr = k / max(len(angles), 1) * 0.6
             hw = hw * np.clip((darkness - thr) / (1 - thr), 0, 1) * 1.8
-        cov = np.maximum(cov, np.clip(hw - d + 0.5, 0, 1))
+        cov = np.maximum(cov, np.clip(hw - d + 0.5, 0, 1) * np.clip(2 * hw, 0, 1))   # zero width -> no line
     self.paint(cov * m[y0:y1, x0:x1] * opacity, color, (x0, y0, x1, y1))
     return self
 
@@ -629,17 +800,24 @@ def paint_like(self, ref, brush="oil", sizes=(48, 24, 12), spacing=0.6, tol=0.08
         ref = load(ref)
     R = resolve(ref, c.H, c.W, None, c.s)[..., :3] * np.ones((c.H, c.W, 1), F32)
     rng = np.random.default_rng(seed)
-    ang = None
+    H, W, s = c.H, c.W, c.s
     if callable(angle):  # Field or f(x, y) of degrees
-        ang = np.asarray((angle if isinstance(angle, Field) else Field(angle)).render(c.H, c.W, None, c.s), F32)
+        ang = np.asarray((angle if isinstance(angle, Field) else Field(angle)).render(H, W, None, s), F32)
+    else:
+        ang = np.full((H, W), float(angle), F32)
+    ang = np.radians(ang)
     count = 0
     for pi, size in enumerate(sizes):
-        sig = max(0.8, size * c.s * 0.35)
+        sig = max(0.8, size * s * 0.35)
         B = cv2.GaussianBlur(R, (0, 0), sig)
         lum = cv2.GaussianBlur(B, (0, 0), sig * 2.5) @ np.array([0.2126, 0.7152, 0.0722], F32)  # big forms only
         gx = cv2.Sobel(lum, cv2.CV_32F, 1, 0, ksize=3)
         gy = cv2.Sobel(lum, cv2.CV_32F, 0, 1, ksize=3)
         mag = np.hypot(gx, gy)
+        flat = 0.02 * (1 if s >= 1 else s)
+        edge = mag > flat     # direction field: along iso-lines, `angle` where the reference is flat
+        DX = np.where(edge, -gy / np.maximum(mag, 1e-9), np.cos(ang)).astype(F32)
+        DY = np.where(edge, gx / np.maximum(mag, 1e-9), np.sin(ang)).astype(F32)
         cur = self.rgba
         cur_rgb = cur[..., :3] * cur[..., 3:4] + (1 - cur[..., 3:4])
         err = np.abs(cur_rgb - B).mean(-1)
@@ -651,46 +829,51 @@ def paint_like(self, ref, brush="oil", sizes=(48, 24, 12), spacing=0.6, tol=0.08
         P = np.stack(np.meshgrid(gxs, gys), -1).reshape(-1, 2)
         P = P + rng.uniform(-0.5, 0.5, P.shape) * step
         P = P[rng.permutation(len(P))]
-        H, W = c.H, c.W
-        flat = 0.02 * (1 if c.s >= 1 else c.s)
-        def direction(x, y, prev=None):
-            xi, yi = min(W - 1, max(0, int(x * c.s))), min(H - 1, max(0, int(y * c.s)))
-            if mag[yi, xi] > flat:
-                d = np.array([-gy[yi, xi], gx[yi, xi]]) / mag[yi, xi]
-            else:
-                a = math.radians(ang[yi, xi] if ang is not None else angle)
-                d = np.array([math.cos(a), math.sin(a)])
-            if prev is not None and d @ prev < 0:
-                d = -d
-            return d
-        for (x, y) in P:
-            xi, yi = min(W - 1, max(0, int(x * c.s))), min(H - 1, max(0, int(y * c.s)))
-            if pi > 0 and err[yi, xi] < tol:
-                continue
-            col = B[yi, xi].copy()
-            pts = [(x, y)]
-            d = direction(x, y)
-            if angle_jitter:
-                a = math.radians(rng.normal(0, angle_jitter))
-                d = np.array([d[0] * math.cos(a) - d[1] * math.sin(a), d[0] * math.sin(a) + d[1] * math.cos(a)])
-            sz = size * rng.uniform(0.8, 1.2)
-            px, py = x, y
-            for k in range(length):
-                px, py = px + d[0] * sz * 0.6, py + d[1] * sz * 0.6
-                qi, qj = min(W - 1, max(0, int(px * c.s))), min(H - 1, max(0, int(py * c.s)))
-                if np.abs(B[qj, qi] - col).mean() > tol * 2.5 or not (-sz < px < c.w + sz and -sz < py < c.h + sz):
-                    break
-                pts.append((px, py))
-                d = direction(px, py, d)
-            if len(pts) < 2:
-                pts = [(x - d[0] * sz * 0.4, y - d[1] * sz * 0.4), (x + d[0] * sz * 0.4, y + d[1] * sz * 0.4)]
-            if color_jitter:
-                hsv = rgb2hsv(col[None])[0] + rng.normal(0, color_jitter, 3) * np.array([0.08, 0.6, 1.0], F32)
-                col = np.clip(hsv2rgb(hsv[None])[0], 0, 1)
-            pr = rng.uniform(*pressure) if isinstance(pressure, tuple) else pressure
-            self.stroke(pts, brush, sz, tuple(float(v) for v in col), pressure=pr,
-                        seed=int(rng.integers(1 << 30)), **kw)
-            count += 1
+        ix = lambda x: np.clip((x * s).astype(np.int64), 0, W - 1)
+        iy = lambda y: np.clip((y * s).astype(np.int64), 0, H - 1)
+        xi, yi = ix(P[:, 0]), iy(P[:, 1])
+        if pi > 0:
+            keep = err[yi, xi] >= tol
+            P, xi, yi = P[keep], xi[keep], yi[keep]
+        N = len(P)
+        if N == 0:
+            continue
+        col = B[yi, xi]
+        d = np.stack([DX[yi, xi], DY[yi, xi]], 1).astype(np.float64)
+        if angle_jitter:
+            a = np.radians(rng.normal(0, angle_jitter, N))
+            ca, sa = np.cos(a), np.sin(a)
+            d = np.stack([d[:, 0] * ca - d[:, 1] * sa, d[:, 0] * sa + d[:, 1] * ca], 1)
+        d0 = d.copy()
+        sz = size * rng.uniform(0.8, 1.2, N)
+        # all strokes walk the direction field in lockstep (each stops at a colour change / off canvas)
+        pts = np.zeros((N, length + 1, 2))
+        pts[:, 0] = P
+        npts = np.ones(N, np.int64)
+        alive = np.ones(N, bool)
+        p = P.astype(np.float64).copy()
+        for k in range(length):
+            p = np.where(alive[:, None], p + d * (sz * 0.6)[:, None], p)
+            qi, qj = ix(p[:, 0]), iy(p[:, 1])
+            ok = (np.abs(B[qj, qi] - col).mean(-1) <= tol * 2.5) & (-sz < p[:, 0]) & (p[:, 0] < c.w + sz) &                 (-sz < p[:, 1]) & (p[:, 1] < c.h + sz)
+            alive &= ok
+            if not alive.any():
+                break
+            pts[alive, k + 1] = p[alive]
+            npts += alive
+            nd = np.stack([DX[qj, qi], DY[qj, qi]], 1)
+            nd = np.where(((nd * d).sum(1) < 0)[:, None], -nd, nd)
+            d = np.where(alive[:, None], nd, d)
+        if color_jitter:
+            hsv = rgb2hsv(col) + rng.normal(0, color_jitter, (N, 3)) * np.array([0.08, 0.6, 1.0], F32)
+            col = np.clip(hsv2rgb(hsv), 0, 1)
+        prs = rng.uniform(*pressure, N) if isinstance(pressure, tuple) else np.full(N, float(pressure))
+        short = npts < 2      # no room to walk: a short dash along the start direction
+        h = d0[short] * (sz[short] * 0.4)[:, None]
+        pts[short, 0], pts[short, 1] = P[short] - h, P[short] + h
+        npts[short] = 2
+        _stroke_batch(self, pts, npts, sz, col, prs, int(rng.integers(1 << 30)), brush, kw)
+        count += N
     return count
 
 

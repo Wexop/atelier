@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import cv2
@@ -81,15 +82,37 @@ def perlin3(p, seed=0):
     return lerp(y0, y1, u[:, 2]) * 1.1
 
 
+_TLS = threading.local()      # .fw = per-point footprint while a material is evaluated (texture AA)
+
+
 def noise3(scale=1.0, octaves=4, seed=0, gain=0.5, lacunarity=2.0):
-    """3D fbm, returns f(p (N,3)) -> (N,) in ~[0,1]. For displace() and solid textures."""
-    def f(p):
-        q = np.asarray(p, F32) * F32(scale)
-        tot, amp, norm = 0.0, 1.0, 0.0
+    """3D fbm, returns f(p (N,3), fw=None) -> (N,) in ~[0,1]. For displace() and solid textures.
+    scale = float or (sx, sy, sz) (anisotropic). fw = footprint per point (world units): octaves finer
+    than ~2 per footprint fade to their mean (band-limited, no aliasing). The path tracer sets fw
+    automatically while it evaluates materials (so f(p, n) colour callables are anti-aliased too)."""
+    sv = np.asarray(scale, F32) * np.ones(3, F32) if np.ndim(scale) else F32(scale)
+    smax = float(np.max(sv))
+    def f(p, fw=None):
+        p = np.asarray(p, F32)
+        if fw is None:
+            fw = getattr(_TLS, "fw", None)
+            if fw is not None and len(fw) != len(p):
+                fw = None
+        q = p * sv
+        tot, amp, norm, freq = np.zeros(len(p), F32), 1.0, 0.0, smax
         for o in range(octaves):
-            tot = tot + amp * perlin3(q + F32(o * 13.17), seed + o)
+            if fw is None:
+                tot = tot + amp * perlin3(q + F32(o * 13.17), seed + o)
+            else:
+                w = np.clip(2 - 4 * fw * F32(freq), 0, 1).astype(F32)
+                m = w > 0
+                if m.all():
+                    tot = tot + amp * w * perlin3(q + F32(o * 13.17), seed + o)
+                elif m.any():
+                    tot[m] += amp * w[m] * perlin3(q[m] + F32(o * 13.17), seed + o)
             norm += amp
             amp *= gain
+            freq *= lacunarity
             q = q * F32(lacunarity)
         return np.clip(0.5 + 0.6 * tot / norm, 0, 1)
     return f
@@ -99,23 +122,36 @@ def noise3(scale=1.0, octaves=4, seed=0, gain=0.5, lacunarity=2.0):
 class SDF:
     """Signed distance function node. f(p: (N,3)) -> (N,). bounds = (centre, radius) or None."""
 
-    def __init__(self, f, bounds=None, lip=1.0):
+    def __init__(self, f, bounds=None, lip=1.0, xf=None):
         self.f, self.bounds, self.lip = f, bounds, lip
+        self.xf = xf        # world -> object-space mapping (None = identity), for Mat(local=True)
 
     def __call__(self, p):
         return self.f(np.asarray(p, F32))
+
+    def _x(self, g):
+        """Object-space chain: world point -> g -> this node's local mapping."""
+        xf = self.xf
+        return g if xf is None else (lambda p: xf(g(p)))
+
+    def local(self, p):
+        """Map world points to object space (follows .move/.rotate/.scale/...)."""
+        p = np.asarray(p, F32)
+        return p if self.xf is None else self.xf(p)
 
     # transforms
     def move(self, x=0.0, y=0.0, z=0.0):
         t = _v((x, y, z))
         b = None if self.bounds is None else (self.bounds[0] + t, self.bounds[1])
-        return SDF(lambda p: self.f(p - t), b, self.lip)
+        g = lambda p: p - t
+        return SDF(lambda p: self.f(g(p)), b, self.lip, self._x(g))
 
     def rotate(self, x=0.0, y=0.0, z=0.0):
         """Rotate by Euler angles in degrees."""
         R = _rot(x, y, z)
         b = None if self.bounds is None else (R @ self.bounds[0], self.bounds[1])
-        return SDF(lambda p: self.f(p @ R), b, self.lip)
+        g = lambda p: p @ R
+        return SDF(lambda p: self.f(g(p)), b, self.lip, self._x(g))
 
     def scale(self, k):
         """Uniform scale (k float) or non-uniform (kx, ky, kz) — the latter is approximate."""
@@ -123,77 +159,72 @@ class SDF:
             kv = _v(k)
             m = float(kv.min())
             b = None if self.bounds is None else (self.bounds[0] * kv, self.bounds[1] * float(kv.max()))
-            return SDF(lambda p: self.f(p / kv) * m, b, self.lip)
+            return SDF(lambda p: self.f(p / kv) * m, b, self.lip, self._x(lambda p: p / kv))
         k = float(k)
         b = None if self.bounds is None else (self.bounds[0] * k, self.bounds[1] * k)
-        return SDF(lambda p: self.f(p / k) * k, b, self.lip)
+        return SDF(lambda p: self.f(p / k) * k, b, self.lip, self._x(lambda p: p / F32(k)))
 
     def mirror(self, axis="x"):
         i = "xyz".index(axis)
-        def f(p):
+        def g(p):
             q = p.copy()
             q[:, i] = np.abs(q[:, i])
-            return self.f(q)
+            return q
         b = None if self.bounds is None else (_v([0 if j == i else self.bounds[0][j] for j in range(3)]),
                                               self.bounds[1] + abs(float(self.bounds[0][i])))
-        return SDF(f, b, self.lip)
+        return SDF(lambda p: self.f(g(p)), b, self.lip, self._x(g))
 
     def twist(self, k):
         """Twist around y: k radians per unit height."""
-        def f(p):
+        def g(p):
             a = p[:, 1] * F32(k)
             c, s = np.cos(a), np.sin(a)
-            q = np.stack([c * p[:, 0] - s * p[:, 2], p[:, 1], s * p[:, 0] + c * p[:, 2]], 1)
-            return self.f(q)
+            return np.stack([c * p[:, 0] - s * p[:, 2], p[:, 1], s * p[:, 0] + c * p[:, 2]], 1)
         b = None if self.bounds is None else (self.bounds[0], self.bounds[1] * 1.2)
-        return SDF(f, b, self.lip * 0.6)
+        return SDF(lambda p: self.f(g(p)), b, self.lip * 0.6, self._x(g))
 
     def bend(self, k):
         """Bend in the xy plane (k = curvature)."""
-        def f(p):
+        def g(p):
             a = p[:, 0] * F32(k)
             c, s = np.cos(a), np.sin(a)
-            q = np.stack([c * p[:, 0] - s * p[:, 1], s * p[:, 0] + c * p[:, 1], p[:, 2]], 1)
-            return self.f(q)
+            return np.stack([c * p[:, 0] - s * p[:, 1], s * p[:, 0] + c * p[:, 1], p[:, 2]], 1)
         b = None if self.bounds is None else (self.bounds[0], self.bounds[1] * 1.3)
-        return SDF(f, b, self.lip * 0.6)
+        return SDF(lambda p: self.f(g(p)), b, self.lip * 0.6, self._x(g))
 
     def repeat(self, period, count=None):
         """Infinite (or ±count) repetition with spacing period (float or (px, py, pz); 0 = no repeat)."""
         per = _v(period) * np.ones(3, F32)
         cnt = None if count is None else _v(count) * np.ones(3, F32)
-        def f(p):
+        def g(p):
             safe = np.where(per > 0, per, 1)
             idx = np.round(p / safe)
             if cnt is not None:
                 idx = np.clip(idx, -cnt, cnt)
-            q = np.where(per > 0, p - safe * idx, p)
-            return self.f(q)
+            return np.where(per > 0, p - safe * idx, p)
         b = None
         if cnt is not None and self.bounds is not None:
             b = (self.bounds[0], self.bounds[1] + float(np.linalg.norm(per * cnt)))
-        return SDF(f, b, self.lip)
+        return SDF(lambda p: self.f(g(p)), b, self.lip, self._x(g))
 
     def onion(self, thickness):
         """Hollow shell of given thickness."""
-        return SDF(lambda p: np.abs(self.f(p)) - F32(thickness / 2), self.bounds, self.lip)
+        return SDF(lambda p: np.abs(self.f(p)) - F32(thickness / 2), self.bounds, self.lip, self.xf)
 
     def round(self, r):
         b = None if self.bounds is None else (self.bounds[0], self.bounds[1] + r)
-        return SDF(lambda p: self.f(p) - F32(r), b, self.lip)
+        return SDF(lambda p: self.f(p) - F32(r), b, self.lip, self.xf)
 
     def displace(self, fn, amount=0.05):
         """Add amount*(fn(p)-0.5) to the surface; fn = noise3(...) or any p -> [0,1]."""
         b = None if self.bounds is None else (self.bounds[0], self.bounds[1] + abs(amount))
-        return SDF(lambda p: self.f(p) + F32(amount) * (fn(p) - 0.5), b, self.lip * 0.7)
+        return SDF(lambda p: self.f(p) + F32(amount) * (fn(p) - 0.5), b, self.lip * 0.7, self.xf)
 
     def elongate(self, x=0.0, y=0.0, z=0.0):
         h = _v((x, y, z)) / 2
-        def f(p):
-            q = p - np.clip(p, -h, h)
-            return self.f(q)
+        g = lambda p: p - np.clip(p, -h, h)
         b = None if self.bounds is None else (self.bounds[0], self.bounds[1] + float(np.linalg.norm(h)))
-        return SDF(f, b, self.lip)
+        return SDF(lambda p: self.f(g(p)), b, self.lip, self._x(g))
 
     # booleans
     def union(self, o, k=0.0):
@@ -240,7 +271,7 @@ def _boolean(a, b, k, kind):
     else:
         f = (lambda p: np.maximum(a.f(p), -b.f(p))) if k <= 0 else (lambda p: -_smin(-a.f(p), b.f(p), F32(k)))
         bounds = a.bounds
-    return SDF(f, bounds, min(a.lip, b.lip))
+    return SDF(f, bounds, min(a.lip, b.lip), a.xf)
 
 
 # ------------------------------------------------------------------ primitives (centred at origin)
@@ -418,38 +449,178 @@ def extrude(points, depth=0.2, smooth=False):
 
 
 # ------------------------------------------------------------------ materials
+def _proj_eval(c, p, n, proj, ts, fw=None):
+    """Sample a 2D Field on 3D points (triplanar or planar projection). fw (world footprint per
+    point) buckets points by pixel size so the Field's own octave cut-off band-limits it."""
+    ts = F32(ts)
+    def samp(u, v, px):
+        out = np.asarray(c.fn(u * ts, v * ts, Ctx(1.0, px, 1.0)), F32)
+        if out.ndim == 2:
+            return out[:, :3] if out.shape[1] >= 3 else np.repeat(out[:, :1], 3, 1)
+        return np.stack([np.broadcast_to(out, u.shape)] * 3, 1)
+    def proj_all(p, n, px):
+        if proj == "tri":
+            w = np.abs(n) ** 4
+            w = w / np.maximum(w.sum(1, keepdims=True), 1e-9)
+            return (samp(p[:, 2], -p[:, 1], px) * w[:, :1] + samp(p[:, 0], p[:, 2], px) * w[:, 1:2]
+                    + samp(p[:, 0], -p[:, 1], px) * w[:, 2:3])
+        i, j = {"xz": (0, 2), "xy": (0, 1), "zy": (2, 1)}[proj]
+        return samp(p[:, i], (-p[:, j] if j == 1 else p[:, j]), px)
+    if fw is None:
+        return proj_all(p, n, 1e-3)
+    px = np.maximum(np.asarray(fw, F32) * ts, 1e-4)
+    lev = np.floor(np.log2(px) * 2).astype(np.int32)       # half-octave buckets
+    out = np.empty((len(p), 3), F32)
+    for L in np.unique(lev):
+        m = lev == L
+        out[m] = proj_all(p[m], n[m], float(2 ** (L / 2)))
+    return out
+
+
+def _src_eval(c, p, n, proj, ts, fw=None, chans=3):
+    """Raw (unclipped) values of a colour/scalar source: Field | f(p, n) | constant."""
+    if isinstance(c, Field):
+        v = _proj_eval(c, p, n, proj, ts, fw)
+        return v if chans == 3 else v[:, 0]
+    if callable(c):
+        v = np.asarray(c(p, n), F32)
+        if chans == 3:
+            return v[:, :3] if v.ndim == 2 else np.stack([np.broadcast_to(v, (len(p),))] * 3, 1)
+        return v[:, 0] if v.ndim == 2 else np.broadcast_to(v, (len(p),)).astype(F32)
+    if chans == 3:
+        return np.broadcast_to(_col(c)[:3], (len(p), 3)).astype(F32)
+    return np.full(len(p), float(c), F32)
+
+
+_TETRA = np.array([[1, -1, -1], [-1, -1, 1], [-1, 1, -1], [1, 1, 1]], F32)
+
+
 class Mat:
     """Material. color: colour | 2D Field (projected) | f(p, n) -> (N,3) sRGB.
-    rough 0..1, metal 0..1, glass 0..1 (+ior), sss 0..1 (soft wrap lighting, sss_color tint),
-    emit colour (+power). proj: 'tri' (triplanar) | 'xz' | 'xy' | 'zy'; tex_scale = repeats/unit."""
+    rough 0..1 | Field | f(p, n) -> (N,) (roughness map), metal 0..1, glass 0..1 (+ior; colour = tint
+    after 0.1 units of travel in path tracing), sss 0..1 (wrap lighting, sss_color tint), emit colour (+power).
+    proj: 'tri' (triplanar) | 'xz' | 'xy' | 'zy'; tex_scale = repeats/unit.
+    local=True: textures/bump/wear in object space (follow .move/.rotate/.scale of the object).
+    bump: micro-normal strength (~0.1-1) of noise3(bump_scale) or bump_fn(p)->[0,1].
+    sheen 0..1 (+sheen_color): cloth/velvet rim. wear: imperfection list [smudges(), scratches(), dust(), edge_wear()]."""
 
     def __init__(self, color="#cccccc", rough=0.5, metal=0.0, glass=0.0, ior=1.45, sss=0.0, sss_color=None,
-                 emit=None, power=1.0, proj="tri", tex_scale=1.0, spec=0.5):
+                 emit=None, power=1.0, proj="tri", tex_scale=1.0, spec=0.5, bump=0.0, bump_scale=60.0,
+                 bump_fn=None, local=False, sheen=0.0, sheen_color=None, wear=None):
         self.color, self.rough, self.metal, self.glass, self.ior = color, rough, metal, glass, ior
         self.sss, self.sss_color, self.emit, self.power = sss, sss_color, emit, power
         self.proj, self.tex_scale, self.spec = proj, tex_scale, spec
+        self.bump, self.bump_scale, self.local = bump, bump_scale, local
+        self.bump_fn = bump_fn if bump_fn is not None else noise3(bump_scale, 3, seed=11)
+        self.sheen, self.sheen_color = sheen, sheen_color
+        self.wear = [] if wear is None else (list(wear) if isinstance(wear, (list, tuple)) else [wear])
 
     def albedo(self, p, n):
-        c = self.color
-        if isinstance(c, Field):
-            k = Ctx(1.0, 1e-3, 1.0)
-            ts = F32(self.tex_scale)
-            def samp(u, v):
-                out = np.asarray(c.fn(u * ts, v * ts, k), F32)
-                return out[:, :3] if out.ndim == 2 else np.stack([out] * 3, 1)
-            if self.proj == "tri":
-                w = np.abs(n) ** 4
-                w = w / w.sum(1, keepdims=True)
-                rgb = (samp(p[:, 2], -p[:, 1]) * w[:, :1] + samp(p[:, 0], p[:, 2]) * w[:, 1:2]
-                       + samp(p[:, 0], -p[:, 1]) * w[:, 2:3])
-            else:
-                a, b = {"xz": (0, 2), "xy": (0, 1), "zy": (2, 1)}[self.proj]
-                rgb = samp(p[:, a], (-p[:, b] if b == 1 else p[:, b]))
-        elif callable(c):
-            rgb = np.asarray(c(p, n), F32)[:, :3]
-        else:
-            rgb = np.broadcast_to(_col(c)[:3], (len(p), 3))
-        return to_linear(np.clip(rgb, 0, 1))
+        return to_linear(np.clip(_src_eval(self.color, p, n, self.proj, self.tex_scale), 0, 1))
+
+    def eval(self, p, n, sdf=None, fw=None, bump=True):
+        """Per-point material: dict(alb (N,3) linear, rough (N,), n (bumped normal)). fw = world footprint
+        per point (band-limits textures). sdf = the object (object-space textures, edge_wear)."""
+        p = np.asarray(p, F32)
+        N = len(p)
+        xf = sdf.xf if (self.local and sdf is not None) else None
+        pt = p if xf is None else xf(p)
+        nt = n
+        if xf is not None:
+            nt = _norm(xf(p + n * F32(1e-3)) - pt)
+        fwl = None if fw is None else np.asarray(fw, F32)
+        if fwl is not None and xf is not None:      # footprint in object units (scale-aware)
+            fwl = fwl * _len(xf(p + _v((1e-3, 0, 0))) - pt) / F32(1e-3)
+        _TLS.fw = fwl
+        try:
+            alb = np.clip(_src_eval(self.color, pt, nt, self.proj, self.tex_scale, fwl), 0, 1)
+            rough = _src_eval(self.rough, pt, nt, self.proj, self.tex_scale, fwl, 1)
+            nb = n
+            if self.bump and bump:
+                e = F32(0.05 / self.bump_scale)
+                g = 0
+                for k in _TETRA:
+                    q = p + k * e
+                    g = g + k * np.asarray(self.bump_fn(q if xf is None else xf(q)), F32)[:, None]
+                g = g / (4 * e) / F32(self.bump_scale)
+                g = g - n * (g * n).sum(1, keepdims=True)
+                nb = _norm(n - F32(self.bump) * g)
+            ctx = dict(p=pt, pw=p, n=n, nl=nt, alb=alb, rough=np.array(rough, F32), sdf=sdf,
+                       fw=(np.zeros(N, F32) if fwl is None else fwl))
+            for w in self.wear:
+                w(ctx)
+        finally:
+            _TLS.fw = None
+        return dict(alb=to_linear(np.clip(ctx["alb"], 0, 1)), rough=np.clip(ctx["rough"], 0, 1).astype(F32), n=nb)
+
+
+# ------------------------------------------------------------------ imperfections (Mat(wear=[...]))
+def _fade(fw, freq):
+    """1 while a feature of frequency freq is resolved, -> 0 when it gets smaller than the footprint."""
+    return np.clip(1.5 - fw * F32(freq), 0, 1)
+
+
+def smudges(amount=0.5, scale=5.0, seed=0):
+    """Greasy smudges / fingerprints: blotchy roughness increase and slight dulling (glass, metal, glaze)."""
+    blot, fine = noise3(scale, 3, seed=seed + 101), noise3(scale * 14, 2, seed=seed + 102)
+    def f(c):
+        m = np.clip((blot(c["p"]) - 0.47) * 4, 0, 1) * (0.55 + 0.45 * fine(c["p"]))
+        c["rough"] = c["rough"] + F32(amount * 0.45) * m * (1 - c["rough"])
+        c["alb"] = c["alb"] * (1 - F32(0.06 * amount) * m)[:, None]
+    return f
+
+
+def scratches(amount=0.5, density=40.0, seed=0):
+    """Fine random scratches (short thin streaks in 3 directions): brighter, rougher lines."""
+    rng = np.random.default_rng(seed + 7)
+    Rs = [_rot(*rng.uniform(0, 360, 3)) for _ in range(3)]
+    gate = noise3(density / 10, 2, seed=seed + 103)
+    k = F32(density)
+    def f(c):
+        p, fw = c["p"], c["fw"]
+        acc = np.zeros(len(p), F32)
+        for i, R in enumerate(Rs):
+            q = (p @ R) * np.array([k / 12, k / 12, k], F32)
+            v = np.abs(perlin3(q, seed + 200 + i))
+            acc = np.maximum(acc, np.clip(1 - v / 0.05, 0, 1))
+        g = np.clip((gate(p) - 0.5) * 5, 0, 1)
+        fd = _fade(fw, density * 2)
+        s = (acc * fd + 0.05 * (1 - fd)) * g
+        c["rough"] = c["rough"] + F32(amount * 0.5) * s * (1 - c["rough"])
+        c["alb"] = np.clip(c["alb"] * (1 + F32(0.25 * amount) * s)[:, None], 0, 1)
+    return f
+
+
+def dust(amount=0.3, color="#c9c2b6", seed=0):
+    """Dust: a faint film plus specks, mostly on up-facing surfaces (world up)."""
+    film, specks = noise3(4, 3, seed=seed + 104), noise3(350, 1, seed=seed + 105)
+    dc = _col(color)[:3].astype(F32)
+    def f(c):
+        p = c["p"]
+        up = np.clip(c["n"][:, 1], 0, 1) ** 2
+        fd = _fade(c["fw"], 350)
+        sp = np.clip((specks(p) - 0.7) * 6, 0, 1) * fd + 0.04 * (1 - fd)
+        cov = np.clip(F32(amount) * (0.25 + 0.75 * up) * (0.35 * film(p) + sp), 0, 1)
+        c["alb"] = c["alb"] * (1 - cov[:, None]) + dc * cov[:, None]
+        c["rough"] = c["rough"] + (1 - c["rough"]) * cov
+    return f
+
+
+def edge_wear(amount=0.5, width=0.01, color=None, seed=0):
+    """Worn convex edges (needs the object SDF): lighter/other colour (color=None -> lightened albedo)
+    and changed roughness, broken up by noise. width = how far the wear reaches (world units)."""
+    br = noise3(0.3 / width, 3, seed=seed + 106)
+    wc = None if color is None else _col(color)[:3].astype(F32)
+    def f(c):
+        if c["sdf"] is None:
+            return
+        d_in = np.asarray(c["sdf"](c["pw"] - c["n"] * F32(width)), F32)
+        edge = np.clip(1 + d_in / F32(width), 0, 1)
+        m = np.clip((edge * (0.6 + amount) + (br(c["p"]) - 0.5) * 1.2 - 0.35) * 3, 0, 1) * F32(min(1, amount * 1.5))
+        tgt = np.clip(c["alb"] * 1.6 + 0.06, 0, 1) if wc is None else np.broadcast_to(wc, c["alb"].shape)
+        c["alb"] = c["alb"] * (1 - m[:, None]) + tgt * m[:, None]
+        c["rough"] = c["rough"] * (1 - m) + np.clip(c["rough"] * 0.7 + 0.15, 0, 1) * m
+    return f
 
 
 # ------------------------------------------------------------------ render result
@@ -514,8 +685,11 @@ class Scene:
                                 soft=max(radius, 1e-3)))
         return self
 
-    def area(self, pos=(0, 2, 2), size=(1.0, 1.0), normal=(0, -1, -1), color="#ffffff", power=6.0, n=(3, 2)):
-        """Rectangular area light approximated by n[0]*n[1] soft point lights."""
+    def area(self, pos=(0, 2, 2), size=(1.0, 1.0), normal=(0, -1, -1), color="#ffffff", power=6.0, n=(3, 2),
+             pattern=None, visible=False):
+        """Rectangular area light approximated by n[0]*n[1] soft point lights (render); sampled over its
+        surface in pathtrace, where it also shows in reflections. pattern (pathtrace): None | "window"
+        (panes + mullions) | "softbox" | f(u, v) -> [0,1]; visible: also seen by camera rays."""
         nv = _norm(_v(normal))
         t1 = _norm(np.cross(nv, _v((0, 1, 0)) if abs(nv[1]) < 0.9 else _v((1, 0, 0))))
         t2 = np.cross(nv, t1)
@@ -527,7 +701,24 @@ class Scene:
                 v = ((j + 0.5) / n[1] - 0.5) * size[1]
                 pts.append(_v(pos) + t1 * u + t2 * v)
         self.lights.append(dict(kind="area", pos=_v(pos), pts=pts, col=to_linear(_col(color)[:3]) * F32(power / k),
-                                soft=max(size) * 0.5))
+                                soft=max(size) * 0.5, rad=to_linear(_col(color)[:3]) * F32(power), t1=t1.astype(F32),
+                                t2=t2.astype(F32), nv=nv, size=(float(size[0]), float(size[1])), pattern=pattern,
+                                visible=visible))
+        return self
+
+    def studio(self, key=(-2.4, 1.9, 1.2), target=(0, 0.25, 0), size=(1.2, 1.6), power=45.0, color="#ffeedd",
+               window=True, fill=0.2, bg="#2a2622"):
+        """Photo-studio set: a big key panel at `key` aimed at `target` ("window" panes or a softbox),
+        a dim cool fill panel opposite (fill = relative power), a dark gradient environment. The panels
+        light the scene and show up in glass/metal reflections (pathtrace)."""
+        k, t = _v(key), _v(target)
+        self.area(k, size, t - k, color, power, pattern="window" if window else "softbox")
+        if fill > 0:
+            fp = _v((2 * t[0] - k[0], t[1] + (k[1] - t[1]) * 0.6, k[2]))   # mirrored across the target
+            self.area(fp, (size[0] * 1.6, size[1]), t - fp, "#dfe8ff", power * fill, pattern="softbox")
+        b = np.asarray(_col(bg)[:3], F32)
+        self.sky(tuple(np.clip(b * 0.8, 0, 1)), tuple(np.clip(b * 1.25, 0, 1)), tuple(np.clip(b * 0.5, 0, 1)),
+                 power=1.0)
         return self
 
     def sky(self, zenith="#5d86c8", horizon="#d6e2ee", ground="#4a4440", power=1.0):
@@ -625,13 +816,17 @@ class Scene:
             sca *= 0.85
         return np.clip(1 - 2.5 * occ, 0, 1)
 
-    def _sky(self, d):
+    def _env(self, d):
+        """Sky gradient radiance (linear) for directions d, without the sun disc."""
         c = self.sky_cfg
         y = d[:, 1:2]
         up = np.clip(y, 0, 1) ** 0.5
         col = np.where(y >= 0, c["horizon"] * (1 - up) + c["zenith"] * up,
                        c["horizon"] * np.exp(np.minimum(y, 0) * 12) + c["ground"] * (1 - np.exp(np.minimum(y, 0) * 12)))
-        col = col * F32(c["power"])
+        return (col * F32(c["power"])).astype(F32)
+
+    def _sky(self, d):
+        col = self._env(d)
         for L in self.lights:
             if L["kind"] == "sun":
                 cs = _dot(d, L["dir"])
@@ -658,10 +853,12 @@ class Scene:
                 continue
             m = ids == k
             mat = self.objects[k][1]
-            a = mat.albedo(p[m], n[m])
+            ev = mat.eval(p[m], n[m], self.objects[k][0])
+            a = ev["alb"]
             alb[m] = a
+            n[m] = ev["n"]
             for key in par:
-                par[key][m] = getattr(mat, key)
+                par[key][m] = ev["rough"] if key == "rough" else getattr(mat, key)
             if mat.emit is not None:
                 emit[m] = to_linear(_col(mat.emit)[:3]) * F32(mat.power)
             sssc[m] = to_linear(_col(mat.sss_color)[:3]) if mat.sss_color is not None else np.sqrt(a)
@@ -850,4 +1047,12 @@ def _layer_render(self, scene, aa=1, exposure=0.0, tonemap="agx", look=None, alp
 Layer.render = _layer_render
 
 __all__ = ["SDF", "sphere", "box", "round_box", "cylinder", "capsule", "torus", "cone", "plane", "ellipsoid",
-           "lathe", "extrude", "Mat", "Scene", "Render", "noise3", "perlin3"]
+           "lathe", "extrude", "Mat", "Scene", "Render", "noise3", "perlin3",
+           "smudges", "scratches", "dust", "edge_wear"]
+
+# path tracer (atelier/pt.py): installs Layer.pathtrace, exports pathtrace / denoise
+try:
+    from .pt import pathtrace, denoise  # noqa: E402,F401
+    __all__ += ["pathtrace", "denoise"]
+except ImportError:  # pt.py not present
+    pass

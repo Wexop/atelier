@@ -4,6 +4,9 @@
   atelier render scene.py --preview 512   fast low-res render -> scene_prev.jpg (no supersampling, saves skipped)
   atelier render scene.py --crop x,y,w,h  full-res zoom on a region -> scene_crop.jpg
   atelier render scene.py --out a.png --scale 2 --seed 3
+  atelier inspect scene.py|image.png      contact sheet (view, values, histogram, clipping, auto zooms, metrics)
+  atelier compare a.png b.png             A | B | amplified diff | split  (scenes render at preview size)
+  atelier reference ref.jpg               palette, value key, light direction of a reference image
   atelier palette | brushes | fx          short reference lists
 A scene is a Python script that builds a Canvas (named `canvas` or `c`, else the last one created).
 `SEED` (from --seed, default 0) is available inside the script.
@@ -29,7 +32,8 @@ def run_scene(path, width=None, scale=None, seed=0, preview=False, nosave=False,
     if not os.path.exists(path):
         raise SceneError(f"scene not found: {path}")
     saved = dict(core.CONFIG)
-    core.CONFIG.update(width=width, scale=scale, preview=preview, nosave=nosave, seed=seed, threads=threads)
+    core.CONFIG.update(width=width, scale=scale, preview=preview, nosave=nosave, seed=seed, threads=threads,
+                       _width_scale=None)
     core._LAST[0] = None
     g = {"__name__": "__main__", "__file__": os.path.abspath(path), "SEED": seed}
     d = os.path.dirname(os.path.abspath(path))
@@ -98,6 +102,65 @@ def cmd_render(a):
     print(f"{kind} -> {out} ({time.time() - t0:.1f}s)")
 
 
+def _load_target(path, a, width=None):
+    """Image path -> path; scene .py -> rendered Canvas (preview width unless --full)."""
+    if not path.lower().endswith(".py"):
+        if not os.path.exists(path):
+            raise SceneError(f"image not found: {path}")
+        return path
+    if getattr(a, "full", False):
+        cv, _ = run_scene(path, scale=getattr(a, "scale", None), seed=a.seed, nosave=True, threads=a.threads)
+    else:
+        w = width or a.preview
+        cv, _ = run_scene(path, width=w, seed=a.seed, preview=True, nosave=True, threads=a.threads)
+    return cv
+
+
+def cmd_inspect(a):
+    from .inspect import contact_sheet, guides
+    t0 = time.time()
+    img = _load_target(a.target, a)
+    out = a.out or _stem(a.target, "_sheet", ".jpg")
+    r = contact_sheet(img, out, crop_size=a.crop_size, title=os.path.basename(a.target))
+    m = r["metrics"]
+    print(f"sheet -> {out} ({time.time() - t0:.1f}s)")
+    print(f"  lightness {m['mean']}/{m['contrast']} range {m['range'][0]}-{m['range'][1]} values {m['values']}  "
+          f"sat {m['saturation']} colorful {m['colorfulness']}")
+    print(f"  noise {m['noise']} aliasing {m['aliasing']}% banding {m['banding']}% sharp {m['sharpness']}  "
+          f"clip black {m['clip_shadows']}% white {m['clip_highlights']}% chan {m['clip_channels']}%")
+    c = r["composition"]
+    print(f"  focal {c['focal']} mass {c['mass']} balance {c['balance']} tilt {c['tilt']}  palette {' '.join(h for h, _ in r['palette'])}")
+    for f in m["flags"]:
+        print(f"  ! {f}")
+    print("  zooms: " + "  ".join(f"{n}=--crop {','.join(map(str, b))}" for n, b, _ in r["crops"]))
+    if a.guides:
+        g = _stem(out, "_guides", ".jpg").replace("_sheet_guides", "_guides")
+        guides(img, g)
+        print(f"guides -> {g}")
+
+
+def cmd_compare(a):
+    from .inspect import compare
+    ia, ib = _load_target(a.a, a), _load_target(a.b, a)
+    labels = tuple(a.labels.split(",")) if a.labels else (os.path.basename(a.a), os.path.basename(a.b))
+    if len(labels) != 2:
+        raise SceneError("--labels expects two names, e.g. --labels before,after")
+    out = a.out or os.path.join(os.path.dirname(a.a), f"{os.path.splitext(os.path.basename(a.a))[0]}_vs_"
+                                f"{os.path.splitext(os.path.basename(a.b))[0]}.jpg")
+    r = compare(ia, ib, out, labels=labels, amp=a.amp)
+    print(f"compare -> {out}  mean diff {r['mean_diff']} max {r['max_diff']} changed {r['changed']}% "
+          f"PSNR {r['psnr']} dB bbox {r['bbox']}")
+
+
+def cmd_reference(a):
+    from .inspect import analyze_reference
+    r = analyze_reference(_load_target(a.image, a), k=a.colors)
+    print(f"palette  {' '.join(f'{h}:{w * 100:.0f}%' for h, w in r['palette'])}")
+    print(f"key {r['key']} (mean {r['mean']}, contrast {r['contrast']})  light from {r['light']} "
+          f"(azimuth {r['light_azimuth']} deg, strength {r['light_strength']})  "
+          f"warmth lights {r['temperature']['lights']} shadows {r['temperature']['shadows']}")
+
+
 def cmd_palette(a):
     from .field import PALETTES
     for k, v in PALETTES.items():
@@ -139,6 +202,29 @@ def main(argv=None):
     r.add_argument("--quality", type=int, default=92)
     r.add_argument("--threads", type=int, help="threads for 3D rendering (default: all cores)")
     r.add_argument("--debug", action="store_true", help="full Python traceback on error")
+    def common(q, preview=640):
+        q.add_argument("--out", help="output image (.jpg/.png)")
+        q.add_argument("--preview", type=int, default=preview, help=f"render width for scenes (default {preview})")
+        q.add_argument("--full", action="store_true", help="render scenes at full resolution")
+        q.add_argument("--scale", type=float, help="render scale with --full")
+        q.add_argument("--seed", type=int, default=0)
+        q.add_argument("--threads", type=int)
+        q.add_argument("--debug", action="store_true")
+    i = sub.add_parser("inspect", help="contact sheet + metrics for a scene or image")
+    i.add_argument("target")
+    common(i)
+    i.add_argument("--crop-size", type=int, default=100, help="zoom window size in raster px")
+    i.add_argument("--guides", action="store_true", help="also write <name>_guides.jpg (composition overlay)")
+    cp = sub.add_parser("compare", help="A/B images or scenes side by side with a difference map")
+    cp.add_argument("a")
+    cp.add_argument("b")
+    common(cp)
+    cp.add_argument("--labels", help="two labels, e.g. before,after")
+    cp.add_argument("--amp", type=float, default=4.0, help="difference amplification (default 4)")
+    rf = sub.add_parser("reference", help="palette / value key / light direction of a reference image")
+    rf.add_argument("image")
+    common(rf)
+    rf.add_argument("--colors", type=int, default=6)
     sub.add_parser("palette", help="list built-in palettes")
     sub.add_parser("brushes", help="list brushes and scatter kinds")
     sub.add_parser("fx", help="list effects with signatures")
@@ -147,14 +233,16 @@ def main(argv=None):
         p.print_help()
         return 0
     try:
-        {"render": cmd_render, "palette": cmd_palette, "brushes": cmd_brushes, "fx": cmd_fx}[a.cmd](a)
+        {"render": cmd_render, "inspect": cmd_inspect, "compare": cmd_compare, "reference": cmd_reference,
+         "palette": cmd_palette, "brushes": cmd_brushes, "fx": cmd_fx}[a.cmd](a)
     except SceneError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
     except Exception as e:  # noqa: BLE001
         if getattr(a, "debug", False):
             raise
-        print(_short_error(e, getattr(a, "scene", "")), file=sys.stderr)
+        scene = next((v for v in (getattr(a, k, None) for k in ("scene", "target", "a", "b")) if isinstance(v, str) and v.endswith(".py")), "")
+        print(_short_error(e, getattr(a, "scene", None) or scene), file=sys.stderr)
         print("  (run with --debug for the full traceback)", file=sys.stderr)
         return 1
     return 0

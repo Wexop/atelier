@@ -1,17 +1,18 @@
 ---
 name: atelier
-description: Make images (PNG/JPG/WebP) yourself with code, no generative AI — photoreal 3D (SDF raymarching), oil/watercolour painting, flat posters with typography, pixel art, generative abstracts. Use when asked to create, draw, paint or render an image.
+description: Make images (PNG/JPG/WebP) yourself with code, no generative AI — photoreal 3D (path tracing), oil/watercolour painting, comics and engravings from 3D, people and animals, landscapes (terrain, sky, sea, trees), posters with typography, pixel art, generative abstracts. Use when asked to create, draw, paint or render an image.
 ---
 # atelier — image studio driven by short Python scripts
 
-Install (Python ≥ 3.11): `pip install git+https://github.com/Wexop/atelier`
+Install (Python ≥ 3.11): `pip install git+https://github.com/Wexop/atelier` (update: `pip install -U git+...`)
 Check: `atelier palette` · `atelier brushes` · `atelier fx` (signatures).
 
 ## Loop (always)
 1. Write `scene.py` (30–80 lines, `from atelier import *`, build a Canvas `c`, end with `c.save(__file__[:-3] + ".png")`).
 2. `atelier render scene.py --preview` → `scene_prev.jpg` (512 px, real low-res render, saves skipped). **Read the image.**
-3. Fix what looks wrong; zoom with `atelier render scene.py --crop x,y,w,h` (canvas px, full res).
-4. ≥3 look-and-fix rounds, then `atelier render scene.py` (final; `--scale 2` = true 2× render, `--seed N` → `SEED`).
+3. `atelier inspect scene.py` → `scene_sheet.jpg`: view, 5-value study + thirds/focal, clip map, histogram, palette, 4 auto zooms
+   (aliasing, banding, noise, highlight) labelled `--crop x,y,w,h`, metrics + red flags. **Read it.** Zoom: `atelier render scene.py --crop x,y,w,h`.
+4. ≥3 look-and-fix rounds (`atelier compare old.png new.png` for A/B), then `atelier render scene.py` (final; `--scale 2`, `--seed N` → `SEED`).
 Errors print one line `scene.py:LINE: Type: message` (`--debug` for traceback).
 
 ## Conventions
@@ -54,8 +55,10 @@ shape.move/rotate(deg)/scale/outline(width, dash)/soft(feather)/points(n)/bounds
 c.draw(shape, fill="black", stroke=None, width=2, cap="round", join="round", dash=(on, off), feather=0, opacity=1)
 c.rect/ellipse/circle/polygon/line/spline/path(d)(..., **same style)
 c.text(txt, x, y, size=32, fill, font="sans"|"mono"|"serif"|family|path.ttf, weight="regular"|"semibold"|"bold"|int,
-       align="left"|"center"|"right", valign="baseline"|"top"|"middle"|"bottom", spacing=em, line_height=1.2, italic, fit=width_px)
-text_shape(...) → Shape (text as mask/outline) · text_size(txt, size) → (width, cap_height)
+       align="left"|"center"|"right", valign="baseline"|"top"|"middle"|"bottom", spacing=em, line_height=1.2, italic, fit=width_px, kern=True)
+text_shape(...) → Shape · text_size(txt, size) → (width, cap_height) · c.text_on_path(txt, shape|points, size, align, lift, fit, fill)
+c.text_box(txt, x, y, w, h=None, size=18, align="left"|"justify"|"center", line_height=1.4, fit=True)   # **b** *i* [#c33]colour[/]
+c.title(txt, x, y, size=96, style="shadow"|"extrude"|"outline"|"inline"|"neon", fill, color2)
 ```
 
 ## Brushes (brush)
@@ -78,6 +81,15 @@ hue_sat(hue_deg, sat_mult, light) saturation(x) color_balance(shadows=(r,g,b), m
 tone_map("agx"|"filmic"|"reinhard", exposure, look="punchy") displace(field, strength) posterize(levels)
 pixelate(size, palette=name|list, colors=N, dither=None|"bayer"|"fs", strength=.6) halftone(size, angle, ink, paper, cmyk=False)
 depth_of_field(depth, focus, aperture=8)   # depth from r = c.render(scene)
+match_palette("ref.jpg", amount) transfer_tone(ref, amount)   # colour/tone transfer from a reference image
+```
+
+## Stylize (stylize) — 3D → illustration + painterly filters (effects for c.apply / L.apply)
+```
+r = c.render(s, alpha=True); c.cur.apply(toon(r, bands=3, shadow=.45, colors={id: col}), shadow_dots(r, size=5, lo=.3), outlines(r, width=2.5, inner=1))
+engraving: L.fill(PAPER, mask=r.alpha); L.apply(render_hatch(r, s, spacing=4.5, layers=3), outlines(r, width=2))  # hatches follow 3D surfaces
+kuwahara(radius=6) oil · xdog(sigma=1, eps=.9, ink, paper) ink lines · pencil() · linocut(lines=7, angle) · edge_smooth(4)
+watercolorize(bleed=2, edge=1, granulation=.4, ink=0..1) · stained_glass(cell=26, lead=3) · mosaic(tile=10) · shading(r) → (H,W) light
 ```
 
 ## 3D (sdf) — y up, units ≈ metres, primitives centred at origin
@@ -86,32 +98,61 @@ sphere(r) box(w, h, d) round_box(w, h, d, r) cylinder(r, h) capsule(a, b, r) tor
 ellipsoid(rx, ry, rz) lathe([(radius, y), ...] bottom→top, thickness=None|shell) extrude([(x, y), ...], depth)
 ops: a | b, a & b, a - b, a.union(b, k=smooth) .inter .sub · .move(x,y,z) .rotate(x,y,z deg) .scale(k|(kx,ky,kz))
      .onion(t) .round(r) .twist(k) .bend(k) .repeat(period, count) .mirror("x") .elongate() .displace(noise3(scale, octaves, seed), amount)
-Mat(color | 2D Field (proj="tri"|"xz"|"xy"|"zy", tex_scale) | f(p, n)->(N,3), rough=.5, metal=0, glass=0, ior=1.45,
-    sss=0, sss_color, emit=None, power=1)
+Mat(color | 2D Field (proj="tri"|"xz"|"xy"|"zy", tex_scale) | f(p, n)->(N,3), rough=.5|Field|f(p,n), metal=0, glass=0, ior=1.45,
+    sss=0, sss_color, emit=None, power=1, bump=.3, bump_scale=60, local=True (textures follow the object), sheen=.6,
+    wear=[smudges(.5), scratches(.5, density=40), dust(.3), edge_wear(.5, width=.01, color)])
 s = Scene(); id = s.add(sdf, Mat(...)); s.camera(pos, target, fov=40)
-s.sun(dir_toward_sun, color, power=3, soft=.04) · s.point(pos, color, power, radius) · s.area(pos, size=(w,h), normal, color, power)
-s.sky(zenith, horizon, ground, power) · s.fog(color, density)
-r = c.render(s, aa=1|2, exposure=0, tonemap="agx", look=None|"punchy", alpha=False)   # paints current layer
-r.depth r.normal r.id r.mask(id) r.focus_at(x, y, c.s) r.linear
+s.sun(dir_toward_sun, color, power=3, soft=.04) · s.point(pos, color, power, radius) · s.area(pos, size=(w,h), normal, color, power, pattern="window"|"softbox", visible)
+s.studio(key, target, size, power=45, window=True, fill=.2, bg) · s.sky(zenith, horizon, ground, power) · s.fog(color, density)
+r = c.render(s, aa=1|2, exposure=0, look=None|"punchy", alpha=False)          # fast raymarcher (direct light + AO + 1 reflection)
+r = c.pathtrace(s, spp=16, bounces=4, denoise=True, aperture=0, focus=None|dist|(x,y), seed=SEED)  # photoreal: GI, multi-refraction glass, adaptive AA
+r.depth r.normal r.id r.mask(id) r.focus_at(x, y, c.s) r.linear r.spp r.time · denoise(img, albedo, normal, depth)
+```
+
+## Nature (nature, terrain)
+```
+h = terrain(384, kind="alpine"|"hills"|"mesa"|"island"|"dunes", seed, erosion=1, flow=False)   # eroded heightmap [0,1]; erode() thermal()
+c.terrain_map(h, style="relief"|"topo"|"shaded", water=.2)
+v = c.landscape(h, cam=(x, alt, z), yaw, fov, horizon=.58, sun_elev=10, sun_az=30, haze=1, clouds=.35, water=.1, waves=.02, snow=.7, seed)
+    v.depth v.water v.project(x, y, z) -> (px, py, px_per_m) v.ground(x, z)   # place 2D trees on the 3D terrain
+c.sky(sun_elev=8, sun_az=0, horizon=.6, clouds=.3, haze=1) · c.sea(sun_elev=6, waves=.12, wave_len=60, foam=.5, clouds=.25)
+c.tree(x, y, height_px, kind="oak"|"pine"|"birch"|"palm"|"bush"|"dead", season="summer"|"spring"|"autumn"|"winter", haze=0..1, seed)
+c.grass(x, y, w, h, n) c.flower(x, y, size, kind="daisy"|"poppy"|"tulip"|"bell") c.fern(x, y, size) · tree3d("oak", 4, seed) → (trunk, leaves) SDFs
+scene_sky(s, sun_elev, sun_az)   # physical sky on a 3D Scene
+```
+
+## Figures (figure) — feet at (x, y), height = standing px (animals: withers)
+```
+c.figure(x, y, h, pose="stand", style="flat"|"line"|"silhouette"|"stick"|"ink"|"chalk", kind="human"|"cat"|"dog"|"horse"|"bird", seed)
+   poses: stand idle walk run sit wave point cheer jump dance think hips phone reach · phase=0-1 (walk cycle) view="front"|"3q"|"side"|"back"
+   body=adult|teen|child|elder build=slim|heavy outfit="tee pants|coat skirt|dress" hair=short|bob|long|bun|curly skin=SKIN name colors={...}
+figure_shape(...) → Shape · figure_joints(...) → {"hand_r": (x, y), ...} (attach props) · figure_sdf(pose, height=1.75, style="mannequin")
+c.crowd(n, box=(x0, y0, x1, y1), horizon=y, height=near_px, tint=(haze, .5), dogs=.1, seed)   # perspective-scaled crowd
+```
+
+## Inspect (inspect) — judge numbers, not only the downscaled view
+```
+m = metrics(c|path|arr)   # noise (<1 clean, >4 grainy) aliasing (% hard steps, >35 jaggy) banding clip_shadows/highlights flags[...]
+contact_sheet(c, "sheet.jpg") · compare(a, b, "ab.jpg") · guides(c) / composition(c) → focal, balance, tilt · analyze_reference("ref.jpg")
 ```
 
 ## Recipes
-**Photoreal** — table `box` or `plane` with `Mat(wood().ramp([...]), proj="xz", tex_scale=.4)`, wall `plane(-1, (0,0,1))`;
-vessels = `lathe(profile, thickness=.02)`; fruit = `sphere().scale((1,.88,1)).sub(dimple, k=.04)` + `sss=.3–.5` + texture `f(p, n)`
-with `noise3`; key `s.area(...)` from the side + dim `s.sky(power=.15–.35)`; add an emissive panel (`emit=`) off-camera behind the light so
-metal/glass have something to reflect; `c.render(s, aa=2, look="punchy")` then `depth_of_field(r.depth, r.focus_at(x, y, c.s), 3)`,
-`bloom(.85, 10, .25)`, `vignette`, `grain(.012)`.
-**Oil** — build a flat colour study `ref` (gradient sky, clouds, `fill_below(ridge_line)` hills, svg river, ellipses trees), then
+**Photoreal** — `s.studio(...)` or a window `s.area(pattern="window", visible=True)`; lathe vessels (`thickness=.02`), liquid = solid lathe 2 mm
+inside; `Mat(..., local=True, bump=.2, wear=[smudges(.3)])`, clear glass `rough=0`; `r = c.pathtrace(s, spp=16)` then
+`depth_of_field(r.depth, r.focus_at(x, y, c.s), 3)`, `bloom(.85, 10, .25)`, `grain(.012)`. Fast drafts: `c.render(s)`.
+**Oil** — build a flat colour study `ref` (gradient sky, clouds, `fill_below(ridge_line)` hills, svg river, trees), then
 `c.paint_like(ref, "oil", sizes=(64,32,16,9))`; `c.cur.relief = .6`; grade with `curves`, `vignette`, light `grain`.
 **Watercolour** — paper bg `#f4efe4`, broad `stroke(..., "watercolor", size 40–90)` washes light → dark (glazes multiply),
-details with `ink` or small `round`; paper tooth: `c.layer(blend="overlay", opacity=.5).fill(paper())` (0.5 = neutral), then `c.layer()`.
-**Flat / poster** — 4–5 colour palette, shapes + booleans (`shape & panel` to clip), `gradient(...).within(shape)`,
-title `c.text(..., fit=W-2*margin, weight="bold")`, small caps lines `spacing=.1–.2`; halftone shading: multiply layer filled with
-a lighting Field, `L.apply(halftone(9, 30, ink, paper="white"))`, then `c.layer()` again.
-**Pixel art** — `Canvas(320, 180, pixel=True)`, custom 8–16 colour list, draw shapes/fields, `L.apply(pixelate(1, PAL, dither="bayer",
-strength=.3))` per layer (give water/sky their own sub-palette), `c.save("x.png", scale=4)` (nearest).
-**Abstract** — `domain_warp(domain_warp(fbm(1.3, 4), .45, 1.2), .1, 2)`, colour via `hue.ramp(curated palette)`, folds
-`np.sin(f*np.pi*k)`, composition mask (e.g. S-curve `Field`) on a dark bg, light `shade(f, color=..., strength=.5)`, `bloom`.
+details with `ink`; paper tooth: `c.layer(blend="overlay", opacity=.5).fill(paper())`, then `c.layer()`. Or `watercolorize()` an image.
+**Comic / engraving** — model in 3D, `r = c.render(s, alpha=True)`, `toon + shadow_dots + outlines` (or `render_hatch + outlines`),
+flat gradient sky, vector clouds (union of circles + stroke), balloon = ellipse | polygon tail + `c.text`.
+**Landscape** — `h = terrain(512, "alpine", seed)`, `v = c.landscape(h, sun_elev=6, water=.15, clouds=.25)`, trees via `v.project`.
+**Flat / poster** — 4–5 colour palette, booleans (`shape & panel` to clip), `gradient(...).within(shape)`, title `c.text(..., fit=W-2*margin)`,
+`c.text_box(..., align="justify")`; halftone shading: multiply layer + lighting Field + `halftone(...)`, then `c.layer()`. People: `c.figure` / `c.crowd`.
+**Pixel art** — `Canvas(320, 180, pixel=True)`, 8–16 colour list, `L.apply(pixelate(1, PAL, dither="bayer", strength=.3))` per layer
+(sub-palettes for water/sky), `c.save("x.png", scale=4)` (nearest).
+**Abstract** — `domain_warp(domain_warp(fbm(1.3, 4), .45, 1.2), .1, 2)`, `hue.ramp(curated palette)`, folds `np.sin(f*np.pi*k)`,
+composition mask (S-curve `Field`) on a dark bg, `shade(f, color=..., strength=.5)`, `bloom`.
 
 ## Pitfalls
 - `c.layer()` changes the current target: later `c.text/...` go to that layer (bad if it is `multiply`). Call `c.layer()` or `c.use(L)`.
@@ -119,8 +160,8 @@ strength=.3))` per layer (give water/sky their own sub-palette), `c.save("x.png"
 - `shade(strength)` depends on field frequency: ≈1 for big forms, ≈.05 for fine textures (fabric).
 - `tone_map` on 2D art greys pure white — it is for HDR/3D; use `curves`/`levels` on illustrations.
 - Hard thresholds alias: use `aastep`/`smoothstep`, not `f > .5`, for visible edges.
-- No kerning in text: prefer caps/tracking for big titles.
 - Noise `scale` = features per canvas height. Shape coords = canvas px; Field coords = 0–1.
-- Slow paths: `paint_like` scales with stroke count (~15–40 s preview); 3D with `aa=2` ≈ 4× (previews force aa=1).
-  `lathe/extrude` profiles are pre-gridded (fast); many objects → union them into one `s.add` only if same material.
-- Glass bends light once (thin shells look best); glass and emitters cast no shadows.
+- Cost: `pathtrace` ≈ 30–60 µs/path (1200×800 @ 8 spp ≈ 5 min on 2 cores, previews 4× fewer spp) — draft with `c.render`;
+  low spp sparkles on glossy metal/glass (raise spp). `aa=2` ≈ 4×. Many SDF parts (figures, tree3d, displace) are slow to trace.
+- Glass: `rough=0` for clear (default rough .5 = frosted). In `c.render` glass bends once; use `pathtrace` for real refraction.
+- Landscape: keep cloud cover ≤ .3 overhead (low clouds look boxy); bloom near the sun haloes clouds.
