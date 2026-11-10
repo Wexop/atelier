@@ -1,13 +1,12 @@
-# Build examples/gallery.jpg (README / landing banner) from the example renders: a 4 x 3 mosaic.
+# Build examples/gallery.jpg (README / landing banner) from the example renders: a 7 x 2 mosaic.
 import os
 from atelier import *
 
 here = os.path.dirname(os.path.abspath(__file__))
-names = ["still_life_pt", "mountains", "comic", "people",
-         "landscape", "typography", "forest", "engraving",
-         "poster", "seascape", "pixel", "abstract"]
-anchor = {"typography": 0.18, "poster": 0.33}          # vertical crop position for portrait images (0 top, 1 bottom)
-cols, tw, th, gap = 4, 450, 300, 10
+names = ["still_life_pt", "mountains", "comic", "people", "anime_sky", "landscape", "typography",
+         "forest", "engraving", "dusk", "poster", "seascape", "pixel", "abstract"]
+anchor = {"typography": 0.18, "poster": 0.33, "dusk": 0.62}          # vertical crop position for portrait images (0 top, 1 bottom)
+cols, tw, th, gap = 7, 330, 220, 8
 rows = -(-len(names) // cols)
 g = Canvas(cols * tw + (cols + 1) * gap, rows * th + (rows + 1) * gap, bg="#111111")
 for i, name in enumerate(names):

@@ -80,6 +80,7 @@ chromatic_aberration(px) lens_distortion(k) exposure(stops) contrast(amt) levels
 hue_sat(hue_deg, sat_mult, light) saturation(x) color_balance(shadows=(r,g,b), mids, highlights) gradient_map(stops) invert()
 tone_map("agx"|"filmic"|"reinhard", exposure, look="punchy") displace(field, strength) posterize(levels)
 pixelate(size, palette=name|list, colors=N, dither=None|"bayer"|"fs", strength=.6) halftone(size, angle, ink, paper, cmyk=False)
+god_rays(x, y, rays=14, length=.9, strength=.45, color, threshold=.7, occlude=True) lens_flare(x, y, strength=.6, color, ghosts=6, streak=.5)
 depth_of_field(depth, focus, aperture=8)   # depth from r = c.render(scene)
 match_palette("ref.jpg", amount) transfer_tone(ref, amount)   # colour/tone transfer from a reference image
 ```
@@ -119,6 +120,10 @@ c.sky(sun_elev=8, sun_az=0, horizon=.6, clouds=.3, haze=1) · c.sea(sun_elev=6, 
 c.tree(x, y, height_px, kind="oak"|"pine"|"birch"|"palm"|"bush"|"dead", season="summer"|"spring"|"autumn"|"winter", haze=0..1, seed)
 c.grass(x, y, w, h, n) c.flower(x, y, size, kind="daisy"|"poppy"|"tulip"|"bell") c.fern(x, y, size) · tree3d("oak", 4, seed) → (trunk, leaves) SDFs
 scene_sky(s, sun_elev, sun_az)   # physical sky on a 3D Scene
+c.anime_cloud(x, y, w, h=.55w, palette="day"|"sunset"|"dusk"|"storm"|(shadow,mid,light,rim), light=(az, elev), bands=3, rim=.7, wisps, edge, bottom, seed)  # cel-shaded cumulus, flat base at (x, y)
+c.anime_tree(x, y, height, kind="round"|"tall"|"umbrella", palette="summer"|"spring"|"autumn"|"sakura"|"dusk"|(sh,mid,lt,rim,trunk), light, width, leafy=.6, seed)  # cel-shaded tree
+c.anime_mountains(y_foot, height, peaks=4, x0, x1, palette="day"|"dusk"|"autumn"|(sh,mid,lt,snow,snow_sh,haze), light, snow=.35, haze=.6, sharp=1, seed)  # faceted range
+c.sparkles(n, region=mask, size=(6, 16), color, rays=4, glow=.6, seed)   # star glints (water, snow)
 ```
 
 ## Figures (figure) — feet at (x, y), height = standing px (animals: withers)
