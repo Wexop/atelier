@@ -10,15 +10,15 @@ c.fill(gradient([(0, "#1f5fd0"), (0.35, "#3f86e6"), (0.62, "#8fc6f5"), (0.75, "#
 sky = c.layer()
 for x, y, w, sd in [(300, 640, 300, 11), (1350, 600, 280, 12), (800, 650, 220, 13)]:
     sky.anime_cloud(x, y, w, h=w * 0.35, palette=("#b8cbe8", "#dce8f7", "#ffffff", "#ffffff"), wisps=0.2, seed=sd)
-sky.anime_cloud(1060, 470, 760, h=420, light=(130, 40), seed=4)
+sky.anime_cloud(1180, 330, 620, h=330, light=(130, 40), seed=4)
 sky.anime_cloud(420, 330, 420, h=200, light=(130, 40), seed=7)
 sky.anime_cloud(1480, 250, 260, h=120, light=(130, 40), seed=9)
 
 # mountains: far pale range, then the main snowy range (cel-shaded facets radiating from the summits)
 rng = np.random.default_rng(SEED)
-c.layer().anime_mountains(760, 330, peaks=5, light=(150, 30), snow=0.25, haze=0.8, seed=5,
+c.layer().anime_mountains(760, 380, peaks=5, light=(150, 30), snow=0.3, haze=0.55, seed=5,
                           palette=("#7d9fd2", "#93b3e0", "#a9c5ea", "#f6f9ff", "#cddbf0", "#d6e8f8"))
-c.layer().anime_mountains(780, 430, peaks=3, x0=250, x1=1450, light=(150, 30), snow=0.35, seed=8)
+c.layer().anime_mountains(790, 400, peaks=3, x0=150, x1=1250, light=(150, 30), snow=0.4, seed=8)
 c.layer(opacity=0.4).fill("#d4e7f8", mask=band(0.66, 0.82, soft=0.1))     # aerial haze at the foot
 
 # rolling meadows, far to near: flat cel bands, a lighter lit strip on each crest

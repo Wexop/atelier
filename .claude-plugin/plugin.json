@@ -1,6 +1,6 @@
 {
   "name": "atelier",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Let your LLM paint: images made in code by the LLM itself, no image model.",
   "author": {
     "name": "Wexop"

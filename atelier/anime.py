@@ -343,70 +343,79 @@ MOUNTAIN_PALETTES = {  # shadow, mid, light, snow, snow shadow, haze
 }
 
 
-def _ridge1d(a, freq, rng, octaves=3):
-    """Ridged 1D value noise of a (any shape), ~freq features per unit."""
-    out = np.zeros_like(a)
-    amp, tot = 1.0, 0.0
-    for _ in range(octaves):
-        g = rng.uniform(-1, 1, 512)
-        v = np.interp((a * freq) % 511, np.arange(512), g)
-        out += (1 - np.abs(v)) * amp
-        tot += amp; amp *= 0.5; freq *= 2.1
-    return out / tot
-
-
-def _layer_anime_mountains(self, y, height, peaks=4, x0=None, x1=None, palette="day", light=(150, 30), snow=0.35,
-                           haze=0.6, sharp=1.0, detail=1.0, seed=0, opacity=1.0):
-    """Paint a cel-shaded mountain range whose foot lies on canvas row y; the highest peak rises `height` px.
-    peaks = number of main summits between x0 and x1 (default full width). Spurs radiate from each summit,
-    so lit and shadowed faces run diagonally (x0, x1 only place the summits); snow covers the top `snow` fraction (lit / shadowed tones).
-    palette: day | dusk | autumn | (shadow, mid, light, snow, snow_shadow, haze). haze fades the foot."""
+def _layer_anime_mountains(self, y, height, peaks=4, x0=None, x1=None, palette="day", light=(150, 35), snow=0.35,
+                           haze=0.6, sharp=1.0, depth=0.35, bands=3, seed=0, opacity=1.0):
+    """Paint a cel-shaded mountain range whose foot lies on canvas row y; the highest summit rises `height` px.
+    Built from an eroded height map seen from the front, so ridges, gullies and snow streaks are real
+    relief, then flattened into `bands` tones. peaks ~ number of main summits between x0 and x1 (default
+    full width); depth = how much the far ranges rise behind (0 = flat wall); snow = top fraction under
+    snow (it settles on gentle slopes); sharp > 1 = spikier summits.
+    palette: day | dusk | autumn | (shadow, mid, light, snow, snow_shadow, haze). haze fades far and low parts."""
+    from .terrain import terrain, normals
     s = self.s
     x0 = 0 if x0 is None else x0
     x1 = self.w if x1 is None else x1
     rng = np.random.default_rng(seed)
     pal = MOUNTAIN_PALETTES[palette] if isinstance(palette, str) else palette
     sh, md, lt, sn, sns, hz = (_rgb(c) for c in pal)
-    span = x1 - x0
-    xs = x0 + (np.arange(peaks) + 0.5 + rng.uniform(-0.3, 0.3, peaks)) / peaks * span
-    hs = rng.uniform(0.55, 1.0, peaks); hs[rng.integers(peaks)] = 1.0
-    ws = span / peaks * rng.uniform(0.7, 1.1, peaks) / sharp       # half-width at the foot, canvas px
 
-    X0, X1 = 0, self.W
-    Y0, Y1 = max(int((y - height * 1.05) * s), 0), min(int(y * s) + 1, self.H)
+    n = 160
+    hm = terrain(n, "alpine", seed=seed, scale=max(peaks * 0.55, 1.0))
+    zf = np.linspace(0, 1, n, dtype=F32)[:, None]                 # 0 = back row, 1 = front row
+    xf = np.linspace(0, 1, n, dtype=F32)[None, :]
+    env = np.clip(1 - (2 * zf - 1.1) ** 2 * 1.6, 0, 1) * np.clip(np.sin(np.pi * xf) * 1.3, 0, 1)
+    hm = cv2.GaussianBlur(np.clip(hm, 0, 1).astype(F32), (0, 0), 1.2) ** sharp * env   # summits mid-depth
+    hm = (hm / max(float(hm.max()), 1e-6)).astype(F32)
+
+    span = x1 - x0
+    X0, X1 = max(int(x0 * s), 0), min(int(x1 * s) + 1, self.W)
+    Y0, Y1 = max(int((y - height * (1 + depth) * 1.02) * s), 0), min(int(y * s) + 1, self.H)
     if X0 >= X1 or Y0 >= Y1:
         return self
-    yy, xx = np.mgrid[Y0:Y1, X0:X1].astype(F32)
-    cx, alt = xx / s, (y - yy / s) / height                       # canvas x, altitude 0 (foot) .. 1
-    best = np.full(cx.shape, -9.0, F32)
-    side = np.zeros_like(cx); radial = np.zeros_like(cx)
-    for xp, hp, wp in zip(xs, hs, ws):
-        u = (cx - xp) / wp
-        top = hp * np.clip(1 - np.abs(u), 0, None) ** 1.1                         # cone silhouette
-        m = top > best
-        best = np.where(m, top, best)
-        side = np.where(m, np.sign(u), side)
-        radial = np.where(m, u / np.maximum(hp - alt * 0.9, 0.05) + xp * 0.01, radial)   # angle around the summit
-    prof = best + (_ridge1d(cx / span, 9, rng) - 0.5) * 0.12 * detail * np.clip(best * 3, 0, 1)
-    inside = np.clip((prof - alt) * height * s / 1.2 + 0.5, 0, 1)
+    bw, bh = X1 - X0, Y1 - Y0
+    full = max(int(span * s), 2)                                   # resample columns to screen pixels
+    hx = cv2.resize(hm, (full, n), interpolation=cv2.INTER_CUBIC)[:, max(X0 - int(x0 * s), 0):][:, :bw]
+    if hx.shape[1] < bw:
+        hx = np.pad(hx, ((0, 0), (0, bw - hx.shape[1])), mode="edge")
+    N3 = normals(hx, size=bw / (height * s), height=1.0 / max(depth, 0.15) * 0.5)
+    alt = (y - (np.arange(Y0, Y1, dtype=F32)[:, None] + 0.5) / s) / height    # 0 at the foot
+    # front view, painter's order: far rows sit higher on screen (camera slightly above)
+    top = np.where(hx > 0.01, hx + (1 - zf) * depth, -1.0)        # bare ground behind does not form a wall
+    idx = np.full((bh, bw), -1, np.int32)
+    for z in range(n):
+        idx = np.where(top[z][None, :] > alt, z, idx)
+    sil = top.max(0)
+    alpha = np.clip((sil[None, :] - alt) * height * s / 1.2 + 0.5, 0, 1) * (idx >= 0)
+    zi = np.maximum(idx, 0)
+    cols = np.arange(bw)[None, :].repeat(bh, 0)
+    Nn = N3[zi, cols]
+    hh = hx[zi, cols]
+    zz = zi / (n - 1)
 
-    # facets: spurs radiate from summits; a face is lit when it turns toward the light
-    spur = _ridge1d(radial, 1.4, rng, 2)
-    dsp = np.gradient(spur, axis=1)
-    lx = float(_light_vec(light)[0])
-    face = -side * 0.6 + np.sign(dsp) * 0.5 * detail
-    t = -face * np.sign(lx) * 0.5 + 0.5
-    t = cv2.GaussianBlur(t.astype(F32), (0, 0), max(0.8, height * s * 0.004))
-    col = np.where((t > 0.7)[..., None], lt, np.where((t > 0.3)[..., None], md, sh)).astype(F32)
-    # snow: above a ragged snowline, streaks running down the spurs
-    line = 1 - snow + (spur - 0.5) * 0.35 * snow + (_ridge1d(cx / span, 23, rng, 2) - 0.5) * 0.08
-    sm = np.clip((alt - line) * height * s / 1.5 + 0.5, 0, 1) * (best > 0.45)
-    snowc = np.where((t > 0.5)[..., None], sn, sns)
-    col = col * (1 - sm[..., None]) + snowc * sm[..., None]
-    if haze > 0:
-        k = (np.clip(1 - alt / 0.6, 0, 1) ** 1.6 * haze)[..., None]
-        col = col * (1 - k) + hz * k
-    a = (inside * opacity)[..., None]
+    az, el = math.radians(light[0]), math.radians(light[1])
+    Lv = np.array([math.cos(az) * math.cos(el), math.sin(el), 0.45 * math.sin(az) * math.cos(el) + 0.3], F32)
+    Lv /= np.linalg.norm(Lv)
+    sg = max(1.5, height * s * 0.008)                              # smooth normals on screen (no row combing)
+    Nn = np.stack([cv2.GaussianBlur(np.ascontiguousarray(Nn[..., i]), (0, 0), sg) for i in range(3)], -1)
+    lam = (Nn @ Lv).astype(F32) / (np.linalg.norm(Nn, axis=-1) + 1e-6)
+    steps = [sh, md, lt] if bands == 3 else [sh, lt] if bands == 2 else [sh, (sh + md) / 2, md, lt]
+    col = np.broadcast_to(steps[0], (bh, bw, 3)).copy()
+    vis = lam[alpha > 0.5]
+    lo, hi = np.percentile(vis, [30, 72]) if vis.size else (0.35, 0.75)   # every range gets all tones
+    for e, c in zip(np.linspace(lo, hi, len(steps) - 1), steps[1:]):
+        m = np.clip((lam - e) / 0.012 + 0.5, 0, 1)[..., None]
+        col = col * (1 - m) + c * m
+    # snow: high ground on gentle slopes; lit and shadowed tones
+    line = 1 - snow + _noise(bh, bw, max(height * s * 0.05, 2), rng) * 0.04
+    flat = np.clip((Nn[..., 1] - 0.05) / 0.12, 0, 1)
+    sm = np.clip((hh - line) / 0.02, 0, 1) * flat
+    sm = cv2.GaussianBlur(sm.astype(F32), (0, 0), max(0.6, s * 0.6))
+    sm = np.clip((sm - 0.5) / 0.1 + 0.5, 0, 1)[..., None]
+    col = col * (1 - sm) + np.where((lam > (lo + hi) / 2)[..., None], sn, sns) * sm
+    if haze > 0:   # aerial perspective: far rows and the foot fade into the haze colour
+        k = np.clip((1 - zz) * 0.55 + np.clip(1 - alt / 0.35, 0, 1) ** 2 * 0.6, 0, 1) * haze
+        col = col * (1 - k[..., None]) + hz * k[..., None]
+    a = (alpha * opacity)[..., None]
     dst = self.px[Y0:Y1, X0:X1]
     dst[:] = np.concatenate([col * a, a], -1) + dst * (1 - a)
     self.touch()

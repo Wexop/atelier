@@ -122,7 +122,7 @@ c.grass(x, y, w, h, n) c.flower(x, y, size, kind="daisy"|"poppy"|"tulip"|"bell")
 scene_sky(s, sun_elev, sun_az)   # physical sky on a 3D Scene
 c.anime_cloud(x, y, w, h=.55w, palette="day"|"sunset"|"dusk"|"storm"|(shadow,mid,light,rim), light=(az, elev), bands=3, rim=.7, wisps, edge, bottom, seed)  # cel-shaded cumulus, flat base at (x, y)
 c.anime_tree(x, y, height, kind="round"|"tall"|"umbrella", palette="summer"|"spring"|"autumn"|"sakura"|"dusk"|(sh,mid,lt,rim,trunk), light, width, leafy=.6, seed)  # cel-shaded tree
-c.anime_mountains(y_foot, height, peaks=4, x0, x1, palette="day"|"dusk"|"autumn"|(sh,mid,lt,snow,snow_sh,haze), light, snow=.35, haze=.6, sharp=1, seed)  # faceted range
+c.anime_mountains(y_foot, height, peaks=4, x0, x1, palette="day"|"dusk"|"autumn"|(sh,mid,lt,snow,snow_sh,haze), light, snow=.35, haze=.6, sharp=1, depth=.35, bands=3, seed)  # eroded relief, front view, cel tones
 c.sparkles(n, region=mask, size=(6, 16), color, rays=4, glow=.6, seed)   # star glints (water, snow)
 ```
 
