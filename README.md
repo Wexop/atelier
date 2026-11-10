@@ -30,6 +30,13 @@ Python ≥ 3.11. Dependencies: numpy, pillow, opencv-python-headless, scipy, ski
 **If you are an AI agent:** run `pip install git+https://github.com/Wexop/atelier`, then read
 <https://raw.githubusercontent.com/Wexop/atelier/main/SKILL.md> and follow it.
 
+**Claude Code plugin** (recommended, gets updates):
+
+```
+/plugin marketplace add Wexop/atelier
+/plugin install atelier@atelier
+```
+
 **Claude Code** (personal skill, available in every project):
 
 ```bash

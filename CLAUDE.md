@@ -8,6 +8,7 @@ Applies to every contributor, human or AI (Claude Code loads this file automatic
 
 ## Versioning
 - The version lives in one place: `__version__` in `atelier/__init__.py` (`pyproject.toml` reads it).
+- Keep `version` in `.claude-plugin/plugin.json` equal to `__version__` (Claude Code uses it to detect plugin updates).
 - Bump it for every change pushed to `main` that touches the `atelier/` package or `SKILL.md`,
   so `pip install -U git+https://github.com/Wexop/atelier` picks it up.
   Semver: patch = fix, minor = new feature or API addition, major = breaking change.

@@ -1,0 +1,18 @@
+{
+  "name": "atelier",
+  "owner": {
+    "name": "Wexop"
+  },
+  "plugins": [
+    {
+      "name": "atelier",
+      "source": "./",
+      "description": "Let your LLM paint: images made in code by the LLM itself, no image model.",
+      "homepage": "https://atelier.wexop.eu",
+      "repository": "https://github.com/Wexop/atelier",
+      "license": "MIT",
+      "keywords": ["image", "painting", "generative-art", "procedural", "skill"],
+      "category": "design"
+    }
+  ]
+}
