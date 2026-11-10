@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "atelier"
+name = "atelier-paint"
 dynamic = ["version"]
 description = "Let your LLM paint: it writes, renders and checks images in code, without calling an image model."
 readme = "README.md"
