@@ -8,6 +8,7 @@ Install (Python ≥ 3.11): `pip install git+https://github.com/Wexop/atelier` (u
 Check: `atelier palette` · `atelier brushes` · `atelier fx` (signatures).
 
 ## Loop (always)
+0. Pick the style guide (see Styles below) and read it; none fits → `styles/new-style.md`.
 1. Write `scene.py` (30–80 lines, `from atelier import *`, build a Canvas `c`, end with `c.save(__file__[:-3] + ".png")`).
 2. `atelier render scene.py --preview` → `scene_prev.jpg` (512 px, real low-res render, saves skipped). **Read the image.**
 3. `atelier inspect scene.py` → `scene_sheet.jpg`: view, 5-value study + thirds/focal, clip map, histogram, palette, 4 auto zooms
@@ -141,23 +142,17 @@ m = metrics(c|path|arr)   # noise (<1 clean, >4 grainy) aliasing (% hard steps, 
 contact_sheet(c, "sheet.jpg") · compare(a, b, "ab.jpg") · guides(c) / composition(c) → focal, balance, tilt · analyze_reference("ref.jpg")
 ```
 
-## Recipes
-**Photoreal** — `s.studio(...)` or a window `s.area(pattern="window", visible=True)`; lathe vessels (`thickness=.02`), liquid = solid lathe 2 mm
-inside; `Mat(..., local=True, bump=.2, wear=[smudges(.3)])`, clear glass `rough=0`; `r = c.pathtrace(s, spp=16)` then
-`depth_of_field(r.depth, r.focus_at(x, y, c.s), 3)`, `bloom(.85, 10, .25)`, `grain(.012)`. Fast drafts: `c.render(s)`.
-**Oil** — build a flat colour study `ref` (gradient sky, clouds, `fill_below(ridge_line)` hills, svg river, trees), then
-`c.paint_like(ref, "oil", sizes=(64,32,16,9))`; `c.cur.relief = .6`; grade with `curves`, `vignette`, light `grain`.
-**Watercolour** — paper bg `#f4efe4`, broad `stroke(..., "watercolor", size 40–90)` washes light → dark (glazes multiply),
-details with `ink`; paper tooth: `c.layer(blend="overlay", opacity=.5).fill(paper())`, then `c.layer()`. Or `watercolorize()` an image.
-**Comic / engraving** — model in 3D, `r = c.render(s, alpha=True)`, `toon + shadow_dots + outlines` (or `render_hatch + outlines`),
-flat gradient sky, vector clouds (union of circles + stroke), balloon = ellipse | polygon tail + `c.text`.
-**Landscape** — `h = terrain(512, "alpine", seed)`, `v = c.landscape(h, sun_elev=6, water=.15, clouds=.25)`, trees via `v.project`.
-**Flat / poster** — 4–5 colour palette, booleans (`shape & panel` to clip), `gradient(...).within(shape)`, title `c.text(..., fit=W-2*margin)`,
-`c.text_box(..., align="justify")`; halftone shading: multiply layer + lighting Field + `halftone(...)`, then `c.layer()`. People: `c.figure` / `c.crowd`.
-**Pixel art** — `Canvas(320, 180, pixel=True)`, 8–16 colour list, `L.apply(pixelate(1, PAL, dither="bayer", strength=.3))` per layer
-(sub-palettes for water/sky), `c.save("x.png", scale=4)` (nearest).
-**Abstract** — `domain_warp(domain_warp(fbm(1.3, 4), .45, 1.2), .1, 2)`, `hue.ramp(curated palette)`, folds `np.sin(f*np.pi*k)`,
-composition mask (S-curve `Field`) on a dark bg, `shade(f, color=..., strength=.5)`, `bloom`.
+## Styles — read the matching guide before writing the scene
+Guides live in `styles/` next to this file (if missing: `https://raw.githubusercontent.com/Wexop/atelier/main/styles/<name>.md`).
+Each gives recipe, rules, pitfalls and an example script. Several can be mixed (e.g. anime + flat).
+- `anime.md` — painted anime landscapes: cel clouds, trees, mountains, rim light, god rays, sparkles
+- `oil.md` — oil (`paint_like`) and watercolour washes
+- `photoreal.md` — path-traced still life / product, terrain landscapes, sea and sky
+- `comic.md` — ligne claire / toon from 3D, engraving, ink filters
+- `flat.md` — flat vector, posters, typography, people, silhouette scenes
+- `pixel.md` — pixel art with palettes and dithering
+- `abstract.md` — generative abstracts from warped fields
+- `new-style.md` — **no guide fits**: study the look, map it to primitives, paint, then save a new `styles/<name>.md`
 
 ## Pitfalls
 - `c.layer()` changes the current target: later `c.text/...` go to that layer (bad if it is `multiply`). Call `c.layer()` or `c.use(L)`.

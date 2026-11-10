@@ -17,8 +17,10 @@ Applies to every contributor, human or AI (Claude Code loads this file automatic
 ## SKILL.md
 - `SKILL.md` is the cheat sheet an AI loads to use the tool: keep it **≤ 200 lines**, dense, accurate.
 - Any API change (new function, renamed parameter, new default) updates `SKILL.md` in the same commit.
-- `.claude/skills/atelier/SKILL.md` must stay identical to the root `SKILL.md`:
-  `cp SKILL.md .claude/skills/atelier/SKILL.md`.
+- `.claude/skills/atelier/` must mirror the root `SKILL.md` and `styles/`:
+  `cp SKILL.md .claude/skills/atelier/SKILL.md && rm -rf .claude/skills/atelier/styles && cp -r styles .claude/skills/atelier/`.
+- Style guides (`styles/*.md`, ≤ 60 lines each, English) hold per-style recipes; SKILL.md only lists them.
+  A new guide comes with an example script in `examples/`.
 - The install line in `SKILL.md` and `README.md` stays `pip install git+https://github.com/Wexop/atelier`.
 
 ## Code
