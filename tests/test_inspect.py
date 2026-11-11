@@ -118,3 +118,33 @@ def test_grid_view_and_layer_boxes(tmp_path):
     assert r["step"] == 50 and (tmp_path / "g.jpg").exists()
     z = grid_view(c, None, width=200, region=(270, 30, 60, 60))
     assert z["region"] == (270, 30, 60, 60) and z["step"] == 5
+
+
+def test_critique_finds_layout_problems(tmp_path):
+    from atelier.inspect import critique
+    c = Canvas(600, 400, bg="#335577")
+    c.layer(name="title"); c.rect(100, 40, 200, 40, fill="#3a5c7e")        # blends into the background
+    c.layer(name="a"); c.circle(300, 250, 50, fill="#ffcc44")
+    c.layer(name="b"); c.circle(300 + 50 + 23, 250, 20, fill="#ffffff")    # 3 px gap -> tangent
+    c.layer(name="low"); c.rect(450, 100, 60, 60, fill="#aa3333")
+    c.layer(name="cover"); c.rect(440, 90, 80, 80, fill="#33aa33")        # hides 'low'
+    c.layer(name="edgy"); c.rect(5, 300, 40, 40, fill="#ffffff")           # 5 px from the left edge
+    c.layer(name="n1"); c.rect(100, 200, 40, 40, fill="#000000")
+    c.layer(name="n2"); c.rect(103, 300, 40, 20, fill="#000000")           # left edges 3 px apart
+    r = critique(c, tmp_path / "cr.jpg")
+    kinds = {(t["kind"], tuple(t["layers"])) for t in r["issues"]}
+    assert ("contrast", ("title",)) in kinds
+    assert ("tangent", ("a", "b")) in kinds
+    assert ("hidden", ("low",)) in kinds
+    assert ("edge", ("edgy",)) in kinds
+    assert any(k == "align" and set(l) == {"n1", "n2"} for k, l in kinds)
+    assert r["issues"][0]["sev"] == "high" and [t["n"] for t in r["issues"]] == list(range(1, len(r["issues"]) + 1))
+    assert (tmp_path / "cr.jpg").exists()
+
+
+def test_critique_clean_layout_has_no_layer_issues():
+    from atelier.inspect import critique
+    c = Canvas(600, 400, bg="#f2efe8")
+    c.layer(name="disc"); c.circle(300, 200, 80, fill="#1d2b44")
+    issues = critique(c)["issues"]
+    assert not [t for t in issues if t["layers"]]

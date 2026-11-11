@@ -850,7 +850,7 @@ def layer_boxes(c) -> list:
 def grid_view(img, path=None, width=768, step=None, region=None, marks=(), boxes=False) -> dict:
     """Image with a coordinate grid labelled in canvas px (labels in margins, never over the art).
     region=(x, y, w, h) zooms on a part (nearest upscale, labels stay in canvas px).
-    marks: (x, y) points or (x, y, w, h) rects to check a placement. boxes=True (Canvas only) outlines
+    marks: (x, y) points or (x, y, w, h[, label[, rgb]]) rects to check a placement. boxes=True (Canvas only) outlines
     each layer's visible bounds with its index:name. Returns {"step", "region", "boxes"}."""
     rgb, s = _src(img)
     H, W = rgb.shape[:2]
@@ -917,10 +917,11 @@ def grid_view(img, path=None, width=768, step=None, region=None, marks=(), boxes
             d.rectangle([bx0, by0, bx1, by1], outline=col + (230,), width=2)
             tag(bx0 + 2, by0 + 2, f"{i}:{name}" if name else str(i), col)
     for m in marks:
-        col = (255, 255, 0)
-        if len(m) == 4:
+        col = tuple(m[5]) if len(m) > 5 else (255, 255, 0)
+        if len(m) >= 4:                                       # (x, y, w, h[, label[, colour]])
             d.rectangle([px(m[0]), py(m[1]), px(m[0] + m[2]), py(m[1] + m[3])], outline=col + (255,), width=2)
-            tag(px(m[0]) + 2, py(m[1] + m[3]) + 2, ",".join(f"{v:g}" for v in m), col)
+            t = str(m[4]) if len(m) > 4 else ",".join(f"{v:g}" for v in m[:4])
+            tag(px(m[0]) + 2, py(m[1]) + 2 if len(m) > 4 else py(m[1] + m[3]) + 2, t, col)
         else:
             x, y = px(m[0]), py(m[1])
             d.line([(x - 9, y), (x + 9, y)], fill=(0, 0, 0, 200), width=3)
@@ -933,5 +934,192 @@ def grid_view(img, path=None, width=768, step=None, region=None, marks=(), boxes
     return {"step": step, "region": (round(rx, 2), round(ry, 2), round(rw, 2), round(rh, 2)), "boxes": found}
 
 
+# ---------------------------------------------------------------- critique
+SEV_COL = {"high": (255, 70, 70), "mid": (255, 170, 40), "low": (110, 200, 255)}
+_TEXTY = ("text", "title", "label", "caption", "headline", "logo")
+
+
+def _lin(v):
+    v = np.asarray(v, np.float64)
+    return np.where(v <= 0.04045, v / 12.92, ((v + 0.055) / 1.055) ** 2.4)
+
+
+def _wcag(a, b):
+    la, lb = (float(_lin(x) @ LUMA) for x in (a, b))
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+def _disk(r):
+    r = max(1, int(r))
+    return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+
+
+def critique(img, path=None, width=1024, max_align=6) -> dict:
+    """Self-critique: problems an eye would catch, each with a concrete fix, ranked high/mid/low.
+    Image-level: quality flags, balance, focal point, horizon tilt. With a Canvas, per layer (use names):
+    figure-ground contrast (OKLab + WCAG for text-like names), elements hidden by layers above,
+    near-miss alignments, near-tangent elements, elements crowding the canvas edge.
+    path: writes the preview with a grid and numbered issue boxes. Returns {"issues": [...], "metrics", "composition"}.
+    Each issue: {"n", "sev", "kind", "msg", "box": (x, y, w, h) | None, "layers": [...]}. Coordinates in canvas px."""
+    issues = []
+
+    def add(sev, kind, msg, box=None, layers=()):
+        issues.append({"sev": sev, "kind": kind, "msg": msg, "box": None if box is None else tuple(round(v) for v in box),
+                       "layers": list(layers)})
+
+    m = _analyze(img)
+    for f in m["flags"]:
+        add("mid", "quality", f)
+    comp = composition(img)
+    rgb, s = _src(img)
+    H, W = rgb.shape[:2]
+    cw, ch = W / s, H / s
+    canvas = hasattr(img, "layers")
+    els = []
+    if canvas:
+        for i, L in enumerate(img.layers):
+            b = L.bounds
+            if not L.visible or L.opacity < 0.3 or b is None or b[2] * b[3] > 0.9 * cw * ch:
+                continue                                       # hidden, empty or background
+            els.append({"i": i, "L": L, "b": b, "name": L.name or f"#{i}", "a": L.px[..., 3] * L.opacity})
+    q = lambda e: f"'{e['name']}'"
+
+    # ---- balance & focal
+    bx, by = comp["balance"]
+    if abs(bx) > 0.3 or abs(by) > 0.45:
+        side = ("right" if bx > 0 else "left") if abs(bx) > 0.3 else ("bottom" if by > 0 else "top")
+        heavy = ""
+        if els:
+            sal = comp["_sal"]
+            mx, my = comp["mass"]
+            on = [e for e in els if (e["b"][0] + e["b"][2] / 2 - cw / 2) * (mx - cw / 2) > 0 or abs(bx) <= 0.3]
+            on.sort(key=lambda e: -float((sal * (e["a"] > 0.5)).sum()))
+            heavy = f"; heaviest there: {', '.join(q(e) for e in on[:2])}" if on else ""
+        add("mid", "balance", f"visual weight leans {side} (balance {bx:+.2f},{by:+.2f}, mass at {comp['mass'][0]},"
+            f"{comp['mass'][1]}){heavy}. Move one toward the centre or add a counterweight on the other side.")
+    fx_, fy_ = comp["focal"]
+    holder = None
+    for e in reversed(els):
+        yy, xx = min(H - 1, int(fy_ * s)), min(W - 1, int(fx_ * s))
+        if e["a"][yy, xx] > 0.5:
+            holder = e
+            break
+    if canvas and els and holder is None:
+        add("low", "focal", f"the strongest eye-catcher ({fx_},{fy_}) is background, not a named element: "
+            "raise the subject's contrast/saturation or calm that area.", (fx_ - cw * .05, fy_ - ch * .05, cw * .1, ch * .1))
+    centre_d = math.hypot(fx_ - cw / 2, fy_ - ch / 2) / math.hypot(cw, ch)
+    if comp["focal_thirds_dist"] > 0.12 and centre_d > 0.1:
+        tx, ty = min(((cw * a, ch * b) for a in (1 / 3, 2 / 3) for b in (1 / 3, 2 / 3)),
+                     key=lambda p: math.hypot(p[0] - fx_, p[1] - fy_))
+        add("low", "focal", f"focal point ({fx_},{fy_}){' on ' + q(holder) if holder else ''} is neither on a third nor "
+            f"centred; nearest third: {tx:.0f},{ty:.0f}.")
+    if comp["tilt"] is not None and 0.2 < abs(comp["tilt"]) < 5:
+        add("mid", "tilt", f"the main horizontal line is tilted {comp['tilt']} deg: level it or tilt it clearly (>5 deg).")
+
+    if els:
+        lab = rgb2oklab(rgb)
+        r = max(2, round(0.012 * max(W, H)))
+        # ---- hidden by layers above
+        cover = np.zeros((H, W), F32)
+        for e in reversed(els):
+            a = e["a"]
+            e["vis"] = float((a * (1 - cover)).sum() / max(a.sum(), 1e-6))
+            if e["vis"] < 0.25 and a.sum() > 30:
+                add("mid", "hidden", f"{q(e)} is {100 - e['vis'] * 100:.0f}% covered by layers above it: restack it "
+                    f"(L.front()) or move it.", e["b"], [e["name"]])
+            if e["L"].blend == "normal":
+                cover = 1 - (1 - cover) * (1 - np.clip(a, 0, 1))
+        # ---- figure-ground contrast
+        for e in els:
+            if e["vis"] < 0.5:
+                continue
+            inside = (e["a"] > 0.5).astype(np.uint8)
+            if inside.sum() < 30:
+                continue
+            band = inside & ~cv2.erode(inside, _disk(r))
+            ring = (cv2.dilate(inside, _disk(r)) > 0) & (e["a"] < 0.05)
+            if band.sum() < 10 or ring.sum() < 10:
+                continue
+            li, lo = np.median(lab[band > 0], 0), np.median(lab[ring], 0)
+            dL, dE = abs(float(li[0] - lo[0])), float(np.linalg.norm(li - lo))
+            ci, co = np.median(rgb[band > 0], 0), np.median(rgb[ring], 0)
+            ratio = _wcag(ci, co)
+            texty = any(t in e["name"].lower() for t in _TEXTY)
+            tag = f"(edge {_hex(ci)} vs behind {_hex(co)}, dL {dL:.2f}, dE {dE:.2f}, contrast {ratio:.1f}:1)"
+            if dE < 0.06:
+                add("high", "contrast", f"{q(e)} blends into what is behind it {tag}: shift its lightness or the "
+                    "background by >=0.15 L, or add an outline / shadow.", e["b"], [e["name"]])
+            elif texty and ratio < 4.5:
+                add("high" if ratio < 3 else "mid", "contrast", f"text {q(e)} is hard to read {tag}: aim for >=4.5:1 "
+                    "(>=3:1 for large titles).", e["b"], [e["name"]])
+            elif dL < 0.05 and dE < 0.12:
+                add("mid", "contrast", f"{q(e)} separates by hue only {tag}: it vanishes in a value study; "
+                    "make it lighter or darker than its surroundings.", e["b"], [e["name"]])
+        # ---- edge crowding
+        tol_e = max(3 / s, 0.02 * min(cw, ch))
+        for e in els:
+            x, y, w, h = e["b"]
+            for side, gap in (("left", x), ("top", y), ("right", cw - x - w), ("bottom", ch - y - h)):
+                if 1.5 / s < gap < tol_e:
+                    add("mid", "edge", f"{q(e)} is {gap:.0f}px from the {side} edge (tension): bleed it off the "
+                        f"edge or give it >= {2 * tol_e:.0f}px.", e["b"], [e["name"]])
+        # ---- near-tangent elements
+        tol_t = max(3 / s, 0.006 * max(cw, ch))
+        small = [e for e in els if e["b"][2] * e["b"][3] < 0.6 * cw * ch]
+        dts = {}
+        for ia, A in enumerate(small):
+            for B in small[ia + 1:]:
+                (ax, ay, aw, ah), (bx_, by_, bw, bh) = A["b"], B["b"]
+                if ax - tol_t > bx_ + bw or bx_ - tol_t > ax + aw or ay - tol_t > by_ + bh or by_ - tol_t > ay + ah:
+                    continue
+                ma, mb = A["a"] > 0.5, B["a"] > 0.5
+                if (ma & mb).any() or not ma.any() or not mb.any():
+                    continue
+                if ia not in dts:
+                    dts[ia] = cv2.distanceTransform((~ma).astype(np.uint8), cv2.DIST_L2, 5)
+                gap = max(0.0, float(dts[ia][mb].min()) - 1) / s     # empty pixels between the two
+                if gap <= tol_t:
+                    yy, xx = np.unravel_index(int(np.argmin(np.where(mb, dts[ia], 1e9))), mb.shape)
+                    add("mid", "tangent", f"{q(A)} and {q(B)} almost touch ({gap:.0f}px gap near {xx / s:.0f},{yy / s:.0f}): "
+                        "overlap them clearly or open the gap.", (xx / s - 15, yy / s - 15, 30, 30), [A["name"], B["name"]])
+        # ---- near-miss alignment
+        eps, tol_a = 1.5 / s, max(4 / s, 0.006 * max(cw, ch))
+        feats = lambda e: {"x": {"left": e["b"][0], "centre x": e["b"][0] + e["b"][2] / 2, "right": e["b"][0] + e["b"][2]},
+                           "y": {"top": e["b"][1], "centre y": e["b"][1] + e["b"][3] / 2, "bottom": e["b"][1] + e["b"][3]}}
+        refs = [{"name": "canvas", "f": {"x": {"centre x": cw / 2}, "y": {"centre y": ch / 2}}}]
+        objs = [{"name": q(e), "f": feats(e), "e": e} for e in els] + refs
+        found = []
+        for ia, A in enumerate(objs):
+            for B in objs[ia + 1:]:
+                if "e" not in A and "e" not in B:
+                    continue
+                for ax_ in ("x", "y"):
+                    pairs = [(abs(va - B["f"][ax_][ka]), ka, va, ka, B["f"][ax_][ka]) for ka, va in A["f"][ax_].items() if ka in B["f"][ax_]]
+                    if not pairs:
+                        continue
+                    if any(d <= eps for d, *_ in pairs):
+                        continue                               # already aligned on this axis
+                    d, ka, va, kb, vb = min(pairs)
+                    if d <= tol_a:
+                        found.append((d, f"nearly aligned: {A['name']} {ka} {va:.0f} vs {B['name']} {kb} {vb:.0f} "
+                                      f"({d:.0f}px): snap to {round((va + vb) / 2)} or offset clearly.",
+                                      [o["e"]["name"] for o in (A, B) if "e" in o], [o["e"]["b"] for o in (A, B) if "e" in o]))
+        for d, msg, names, bs in sorted(found, key=lambda t: -t[0])[:max_align]:
+            add("low", "align", msg, bs[0], names)
+
+    rank = {"high": 0, "mid": 1, "low": 2}
+    issues.sort(key=lambda t: rank[t["sev"]])
+    for n, t in enumerate(issues, 1):
+        t["n"] = n
+    if path:
+        grouped = {}
+        for t in issues:                                       # one box per region, worst severity colour
+            if t["box"] is not None:
+                grouped.setdefault(t["box"], []).append(t)
+        marks = [(*bx, ",".join(str(t["n"]) for t in ts), SEV_COL[ts[0]["sev"]]) for bx, ts in reversed(grouped.items())]
+        grid_view(img, path, width=width, marks=marks)
+    return {"issues": issues, "metrics": m, "composition": {k: v for k, v in comp.items() if not k.startswith("_")}}
+
+
 __all__ = ["metrics", "contact_sheet", "compare", "guides", "composition", "saliency",
-           "analyze_reference", "match_palette", "transfer_tone", "grid_view", "layer_boxes"]
+           "analyze_reference", "match_palette", "transfer_tone", "grid_view", "layer_boxes", "critique"]

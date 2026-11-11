@@ -6,6 +6,7 @@
   atelier render scene.py --grid [STEP] --boxes --mark x,y   preview/crop with canvas-px grid, layer bounds, marks
   atelier render scene.py --out a.png --scale 2 --seed 3
   atelier inspect scene.py|image.png      contact sheet (view, values, histogram, clipping, auto zooms, metrics)
+  atelier critique scene.py|image.png     ranked problems + fixes (contrast, balance, alignment, tangents, edges)
   atelier compare a.png b.png             A | B | amplified diff | split  (scenes render at preview size)
   atelier reference ref.jpg               palette, value key, light direction of a reference image
   atelier palette | brushes | fx          short reference lists
@@ -166,6 +167,21 @@ def cmd_inspect(a):
         print(f"guides -> {g}")
 
 
+def cmd_critique(a):
+    from .inspect import critique
+    t0 = time.time()
+    img = _load_target(a.target, a)
+    out = a.out or _stem(a.target, "_critique", ".jpg")
+    r = critique(img, out)
+    iss = r["issues"]
+    n = {k: sum(t["sev"] == k for t in iss) for k in ("high", "mid", "low")}
+    print(f"critique -> {out} ({time.time() - t0:.1f}s)  {n['high']} high, {n['mid']} mid, {n['low']} low")
+    for t in iss:
+        print(f"  {t['n']:>2} [{t['sev']}] {t['kind']}: {t['msg']}" + (f"  box {','.join(map(str, t['box']))}" if t["box"] else ""))
+    if not iss:
+        print("  no issue found (still look at the image)")
+
+
 def cmd_compare(a):
     from .inspect import compare
     ia, ib = _load_target(a.a, a), _load_target(a.b, a)
@@ -245,6 +261,9 @@ def main(argv=None):
     common(i)
     i.add_argument("--crop-size", type=int, default=100, help="zoom window size in raster px")
     i.add_argument("--guides", action="store_true", help="also write <name>_guides.jpg (composition overlay)")
+    cr = sub.add_parser("critique", help="ranked problems with fixes: contrast, balance, alignment, tangents, edges")
+    cr.add_argument("target")
+    common(cr, preview=1024)
     cp = sub.add_parser("compare", help="A/B images or scenes side by side with a difference map")
     cp.add_argument("a")
     cp.add_argument("b")
@@ -263,7 +282,7 @@ def main(argv=None):
         p.print_help()
         return 0
     try:
-        {"render": cmd_render, "inspect": cmd_inspect, "compare": cmd_compare, "reference": cmd_reference,
+        {"render": cmd_render, "inspect": cmd_inspect, "critique": cmd_critique, "compare": cmd_compare, "reference": cmd_reference,
          "palette": cmd_palette, "brushes": cmd_brushes, "fx": cmd_fx}[a.cmd](a)
     except SceneError as e:
         print(f"error: {e}", file=sys.stderr)

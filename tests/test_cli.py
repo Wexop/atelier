@@ -94,3 +94,10 @@ def test_grid_overlay(tmp_path, capsys):
     assert main(["render", s, "--crop", "150,50,100,100", "--grid", "10"]) == 0
     assert (tmp_path / "scene_crop.jpg").exists()
     assert main(["render", s, "--grid", "--mark", "1,2,3"]) == 2
+
+
+def test_critique_command(tmp_path, capsys):
+    s = write(tmp_path)
+    assert main(["critique", s, "--preview", "256"]) == 0
+    assert "critique ->" in capsys.readouterr().out
+    assert (tmp_path / "scene_critique.jpg").exists()
