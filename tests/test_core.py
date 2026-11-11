@@ -109,3 +109,43 @@ def test_place_image():
     c.place(img, x=50, y=50, scale=2)
     out = c.flatten()
     assert out[50, 50, 0] > 0.99 and out[5, 5, 0] < 0.01
+
+
+def test_named_layers_transform_and_stack():
+    import numpy as np
+    from atelier import Canvas
+    c = Canvas(200, 100, bg="black")
+    sun = c.layer(name="sun")
+    c.circle(50, 50, 10, fill="white")
+    assert c["sun"] is sun and "sun" in c and "moon" not in c
+    assert sun.bounds == (40, 40, 20, 20)
+    sun.move(30, -10)
+    assert sun.bounds == (70, 30, 20, 20)
+    sun.move_to(150, 90, anchor="bottom")
+    assert sun.bounds == (140, 70, 20, 20)
+    sun.transform(scale=2)
+    assert all(abs(a - b) <= 2 for a, b in zip(sun.bounds, (130, 60, 40, 40)))  # AA edge may grow
+    sh = sun.duplicate("hero/shadow")
+    c.layer(name="hero/body")
+    assert [L.name for L in c.group("hero")] == ["hero/shadow", "hero/body"]
+    sh.back()
+    assert c.layers[0] is sh
+    sh.above("sun")
+    assert c.layers.index(sh) == c.layers.index(sun) + 1
+    before = c.flatten()[80, 150, 0]
+    sun.hide(); sh.hide()
+    assert before > 0.9 and c.flatten()[80, 150, 0] < 0.1
+    sun.show()
+    assert c.use("sun") is sun and c.cur is sun
+    sun.remove()
+    assert "sun" not in c and c.cur is c.layers[-1]
+    try:
+        c["nope"]
+        assert False
+    except KeyError as e:
+        assert "hero/body" in str(e)
+    flip = c.layer(name="f")
+    c.rect(10, 10, 20, 10, fill="red")
+    flip.transform(flip="x", center=(100, 50))
+    assert flip.bounds == (170, 10, 20, 10)
+    assert np.isfinite(c.flatten()).all()

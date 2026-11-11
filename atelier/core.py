@@ -424,10 +424,118 @@ class Layer:
         L = Layer(self.canvas, self.blend, self.opacity, None, self.name)
         L.px = self.px.copy()
         L._mask = None if self._mask is None else self._mask.copy()
+        if self.height is not None:
+            L.height = self.height.copy()
+        L.visible = self.visible
+        return L
+
+    # ---- placement (canvas px) and stacking
+    visible = True
+
+    @property
+    def bounds(self):
+        """(x, y, w, h) of the visible pixels in canvas px, or None if the layer is empty."""
+        bb = _bbox(self.px[..., 3] > 0.02)
+        if bb is None:
+            return None
+        y0, y1, x0, x1 = (v / self.s for v in bb)
+        return round(x0), round(y0), round(x1 - x0), round(y1 - y0)
+
+    def transform(self, dx=0.0, dy=0.0, scale=1.0, rot=0.0, flip=None, center=None):
+        """Move / scale / rotate (deg, counter-clockwise) / mirror (flip="x"|"y") the content.
+        center (canvas px) defaults to the centre of the content's bounds. The mask stays put."""
+        b = self.bounds
+        if b is None:
+            return self
+        s = self.s
+        cx, cy = center if center is not None else (b[0] + b[2] / 2, b[1] + b[3] / 2)
+        a = np.radians(rot)
+        A = scale * np.array([[np.cos(a), np.sin(a)], [-np.sin(a), np.cos(a)]])
+        if flip:
+            A = A @ np.diag([-1.0 if "x" in flip else 1.0, -1.0 if "y" in flip else 1.0])
+        c = np.array([cx * s - 0.5, cy * s - 0.5])   # pixel-centre convention of warpAffine
+        M = np.hstack([A, (c + np.array([dx * s, dy * s]) - A @ c)[:, None]]).astype(np.float64)
+        interp = cv2.INTER_NEAREST if self.canvas.pixel else cv2.INTER_LINEAR
+
+        def warp(img):
+            return cv2.warpAffine(img, M, (self.W, self.H), flags=interp, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        self.px = np.ascontiguousarray(warp(self.px), F32)
+        if self.height is not None:
+            self.height = warp(np.asarray(self.height, F32))
+        return self.touch()
+
+    def move(self, dx=0.0, dy=0.0):
+        """Shift the content by (dx, dy) canvas px."""
+        return self.transform(dx, dy)
+
+    def move_to(self, x, y, anchor="center"):
+        """Move the content so its bounds' anchor lands on (x, y). anchor: center top bottom left right
+        topleft topright bottomleft bottomright, or (fx, fy) fractions of the bounds."""
+        b = self.bounds
+        if b is None:
+            return self
+        if isinstance(anchor, str):
+            fx = 0.0 if "left" in anchor else 1.0 if "right" in anchor else 0.5
+            fy = 0.0 if "top" in anchor else 1.0 if "bottom" in anchor else 0.5
+        else:
+            fx, fy = anchor
+        return self.transform(x - (b[0] + fx * b[2]), y - (b[1] + fy * b[3]))
+
+    def _restack(self, i):
+        Ls = self.canvas.layers
+        Ls.remove(self)
+        Ls.insert(max(0, min(i, len(Ls))), self)
+        return self
+
+    def front(self):
+        """Put this layer on top of the stack."""
+        return self._restack(len(self.canvas.layers))
+
+    def back(self):
+        """Put this layer at the bottom of the stack."""
+        return self._restack(0)
+
+    def above(self, other):
+        """Restack just above another layer (Layer or name)."""
+        self.canvas.layers.remove(self)
+        o = self.canvas._get(other)
+        self.canvas.layers.insert(self.canvas.layers.index(o) + 1, self)
+        return self
+
+    def below(self, other):
+        """Restack just below another layer (Layer or name)."""
+        self.canvas.layers.remove(self)
+        o = self.canvas._get(other)
+        self.canvas.layers.insert(self.canvas.layers.index(o), self)
+        return self
+
+    def hide(self):
+        self.visible = False
+        return self
+
+    def show(self):
+        self.visible = True
+        return self
+
+    def remove(self):
+        """Delete this layer from its canvas (the top layer becomes current if it was)."""
+        c = self.canvas
+        c.layers.remove(self)
+        if c.cur is self:
+            c.cur = c.layers[-1] if c.layers else c.layer(name="base")
+        return self
+
+    def duplicate(self, name=None):
+        """Copy just above this one, made current (e.g. a shadow from a shape)."""
+        L = self.copy()
+        L.name = name or self.name
+        self.canvas.layers.insert(self.canvas.layers.index(self) + 1, L)
+        self.canvas.cur = L
         return L
 
     def __repr__(self):
-        return f"<Layer {self.name or ''} {self.W}x{self.H} blend={self.blend} opacity={self.opacity}>"
+        return (f"<Layer {self.name or ''} {self.W}x{self.H} blend={self.blend} opacity={self.opacity}"
+                f"{'' if self.visible else ' hidden'}>")
 
 
 class Canvas:
@@ -473,18 +581,35 @@ class Canvas:
         return L
 
     def use(self, layer):
-        """Make `layer` the current drawing target."""
-        self.cur = layer
-        return layer
+        """Make `layer` (Layer or name) the current drawing target."""
+        self.cur = self._get(layer)
+        return self.cur
+
+    def _get(self, layer):
+        return self[layer] if isinstance(layer, str) else layer
+
+    def __getitem__(self, name) -> Layer:
+        """c["shadow"] -> the topmost layer with that name."""
+        for L in reversed(self.layers):
+            if L.name == name:
+                return L
+        raise KeyError(f"no layer {name!r}; layers: {[L.name for L in self.layers]}")
+
+    def __contains__(self, name):
+        return any(L.name == name for L in self.layers)
+
+    def group(self, prefix) -> list:
+        """Layers named `prefix` or `prefix/...` (e.g. "hero" -> hero/body, hero/shadow), bottom to top."""
+        return [L for L in self.layers if L.name == prefix or (L.name or "").startswith(prefix + "/")]
 
     def flatten(self) -> np.ndarray:
         """Composite all layers -> straight RGBA float32 (H, W, 4). Cached until a layer changes."""
-        key = tuple((id(L), id(L.px), L.v, L.blend, L.opacity, id(L._mask)) for L in self.layers)
+        key = tuple((id(L), id(L.px), L.v, L.blend, L.opacity, id(L._mask), L.visible) for L in self.layers)
         if self.__dict__.get("_fkey") == key:
             return self._flat.copy()
         dst = np.zeros((self.H, self.W, 4), F32)
         for L in self.layers:
-            if L.opacity > 0:
+            if L.opacity > 0 and L.visible:
                 _composite(dst, L.px, L.blend, L.opacity, L._mask)
         self._fkey, self._flat = key, unpremul(dst)
         return self._flat.copy()

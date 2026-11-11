@@ -842,19 +842,9 @@ def _nice_step(span, target=10):
     return next(m * p for m in (1, 2, 2.5, 5, 10) if raw <= m * p + 1e-9)
 
 
-def layer_boxes(c, thresh=0.02) -> list:
-    """Bounding box of every layer's visible pixels, in canvas px: [(index, name, (x, y, w, h)) | None box]."""
-    out = []
-    for i, L in enumerate(c.layers):
-        a = L.px[..., 3]
-        rows, cols = np.flatnonzero((a > thresh).any(1)), np.flatnonzero((a > thresh).any(0))
-        box = None
-        if len(rows):
-            s = c.s
-            x0, y0, x1, y1 = cols[0] / s, rows[0] / s, (cols[-1] + 1) / s, (rows[-1] + 1) / s
-            box = (round(x0), round(y0), round(x1 - x0), round(y1 - y0))
-        out.append((i, L.name or "", box))
-    return out
+def layer_boxes(c) -> list:
+    """Bounding box of every layer's visible pixels, in canvas px: [(index, name, (x, y, w, h) | None)]."""
+    return [(i, L.name or "", L.bounds) for i, L in enumerate(c.layers)]
 
 
 def grid_view(img, path=None, width=768, step=None, region=None, marks=(), boxes=False) -> dict:

@@ -98,7 +98,7 @@ atelier render night.py                    # final render
 
 | module | contents |
 |---|---|
-| `core` | canvas, layers, 17 blend modes, masks, image import, export, previews |
+| `core` | canvas, named layers (move / scale / flip / restack / hide by name, groups), 17 blend modes, masks, image import, export, previews |
 | `field` | lazy procedural fields: perlin/simplex/value, fbm, ridged, worley, domain warp, patterns, gradients, palettes, 2.5D shading |
 | `vector` | skia shapes, SVG paths, booleans, strokes/dashes, text with embedded fonts and GPOS kerning, text on a path, justified text boxes, title presets |
 | `brush` | stroke engine (round, ink, chalk, bristle, oil with impasto, watercolour with glazing), scatter, hatching, pigment mixing, `paint_like` |

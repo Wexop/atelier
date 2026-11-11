@@ -606,13 +606,13 @@ _orig_flatten = Canvas.flatten
 def _flatten(self):
     if not any(getattr(L, "height", None) is not None for L in self.layers):
         return _orig_flatten(self)
-    key = tuple((id(L), id(L.px), L.v, L.blend, L.opacity, id(L._mask), getattr(L, "relief", 1.0))
+    key = tuple((id(L), id(L.px), L.v, L.blend, L.opacity, id(L._mask), getattr(L, "relief", 1.0), L.visible)
                 for L in self.layers)
     if self.__dict__.get("_fkey") == key:
         return self._flat.copy()
     dst = np.zeros((self.H, self.W, 4), F32)
     for L in self.layers:
-        if L.opacity > 0:
+        if L.opacity > 0 and L.visible:
             src = impasto(L, getattr(L, "relief", 1.0)) if L.height is not None else L.px
             _composite(dst, src, L.blend, L.opacity, L._mask)
     self._fkey, self._flat = key, unpremul(dst)

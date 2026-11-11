@@ -27,6 +27,9 @@ Errors print one line `scene.py:LINE: Type: message` (`--debug` for traceback).
 ```
 c = Canvas(w, h, bg=None, pixel=False)      # pixel=True: no AA, fixed scale, nearest-neighbour export
 L = c.layer(blend="normal", opacity=1, mask=None, name=None)   # new layer, BECOMES CURRENT; c.use(L) to switch back
+Name layers by role ("sun", "hero/body", "hero/shadow") and edit by name: c["sun"] · c.use("sun") · "sun" in c · c.group("hero") -> [layers]
+L.bounds -> (x,y,w,h) · L.move(dx,dy) · L.move_to(x, y, anchor="center"|"bottom"|"topleft"..) · L.transform(dx,dy,scale,rot,flip="x"|"y",center)
+L.front() .back() .above("x") .below("x") · L.hide() .show() · L.duplicate("hero/shadow") · L.remove()   (group: for L in c.group("hero"): L.move(40, 0))
 blends: normal multiply screen overlay soft_light hard_light add subtract color_dodge color_burn darken lighten difference hue saturation color luminosity
 c.fill(src, mask=None) · c.erase(mask) · c.place(img|path, x=None, y=None, scale=None(cover), rot=0, fit="cover"|"contain", blend, opacity) -> layer
 c.apply(*fx, mask=None)   # MERGES all layers, then effects (final grading);  L.apply(*fx, mask=None) = one layer
