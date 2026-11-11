@@ -104,3 +104,17 @@ def test_reference_and_transfer():
         assert out.shape == img.shape and np.allclose(out[..., 3], 1)
         assert metrics(out[..., :3])["colorfulness"] > metrics(img[..., :3])["colorfulness"] + 10
     assert np.allclose(match_palette(ref, 0)(img)[..., :3], img[..., :3], atol=2e-3)
+
+
+def test_grid_view_and_layer_boxes(tmp_path):
+    from atelier.inspect import grid_view, layer_boxes
+    c = Canvas(400, 200, bg="#204060")
+    c.layer(name="dot")
+    c.circle(300, 60, 20, fill="white")
+    c.layer(name="none")
+    b = {n: box for _, n, box in layer_boxes(c)}
+    assert b["dot"] == (280, 40, 40, 40) and b["none"] is None
+    r = grid_view(c, tmp_path / "g.jpg", width=400, marks=[(300, 60), (10, 10, 50, 20)], boxes=True)
+    assert r["step"] == 50 and (tmp_path / "g.jpg").exists()
+    z = grid_view(c, None, width=200, region=(270, 30, 60, 60))
+    assert z["region"] == (270, 30, 60, 60) and z["step"] == 5

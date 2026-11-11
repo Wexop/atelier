@@ -3,6 +3,7 @@
   atelier render scene.py                 run the scene (its own save() calls write the final)
   atelier render scene.py --preview 512   fast low-res render -> scene_prev.jpg (no supersampling, saves skipped)
   atelier render scene.py --crop x,y,w,h  full-res zoom on a region -> scene_crop.jpg
+  atelier render scene.py --grid [STEP] --boxes --mark x,y   preview/crop with canvas-px grid, layer bounds, marks
   atelier render scene.py --out a.png --scale 2 --seed 3
   atelier inspect scene.py|image.png      contact sheet (view, values, histogram, clipping, auto zooms, metrics)
   atelier compare a.png b.png             A | B | amplified diff | split  (scenes render at preview size)
@@ -79,16 +80,42 @@ def cmd_render(a):
             assert len(crop) == 4
         except Exception:
             raise SceneError("--crop expects x,y,w,h in canvas pixels, e.g. --crop 400,300,200,120")
-    if a.preview:
-        cv, _ = run_scene(a.scene, width=a.preview, seed=a.seed, preview=True, nosave=True, threads=a.threads)
-        out = a.out or _stem(a.scene, "_prev", ".jpg")
-        cv.preview(out, width=a.preview)
-        kind = f"preview {a.preview}px"
-    elif crop:
-        cv, _ = run_scene(a.scene, scale=a.scale, seed=a.seed, nosave=True, threads=a.threads)
-        out = a.out or _stem(a.scene, "_crop", ".jpg")
-        cv.crop_preview(out, *crop, width=a.width or 512)
-        kind = f"crop {a.crop}"
+    marks = []
+    for m in a.mark or []:
+        for part in m.split(";"):
+            try:
+                v = [float(t) for t in part.split(",")]
+                assert len(v) in (2, 4)
+            except Exception:
+                raise SceneError("--mark expects x,y or x,y,w,h in canvas px (several: 'x,y;x,y,w,h')")
+            marks.append(v)
+    overlay = a.grid is not None or a.boxes or marks
+    if overlay and not (a.preview or crop):
+        a.preview = 512
+    if a.preview or crop:
+        if a.preview:
+            cv, _ = run_scene(a.scene, width=a.preview, seed=a.seed, preview=True, nosave=True, threads=a.threads)
+            out = a.out or _stem(a.scene, "_prev", ".jpg")
+            kind = f"preview {a.preview}px"
+        else:
+            cv, _ = run_scene(a.scene, scale=a.scale, seed=a.seed, nosave=True, threads=a.threads)
+            out = a.out or _stem(a.scene, "_crop", ".jpg")
+            kind = f"crop {a.crop}"
+        if overlay:
+            from .inspect import grid_view
+            w = a.width or (768 if crop else max(a.preview, 768))
+            r = grid_view(cv, out, width=w, step=a.grid or None, region=crop, marks=marks, boxes=a.boxes)
+            kind += f", grid {r['step']:g} px (canvas {cv.w}x{cv.h})"
+        elif crop:
+            cv.crop_preview(out, *crop, width=a.width or 512)
+        else:
+            cv.preview(out, width=a.preview)
+        print(f"{kind} -> {out} ({time.time() - t0:.1f}s)")
+        if overlay and a.boxes:
+            for i, name, b in r["boxes"]:
+                print(f"  layer {i}{' ' + name if name else ''}: " + ("empty" if b is None else
+                      f"x={b[0]} y={b[1]} w={b[2]} h={b[3]}  (centre {b[0] + b[2] / 2:g},{b[1] + b[3] / 2:g})"))
+        return
     else:
         nosave = a.out is not None
         before = set(core._SAVED)
@@ -197,6 +224,9 @@ def main(argv=None):
     r.add_argument("--preview", type=int, nargs="?", const=512, help="fast preview at this width (default 512)")
     r.add_argument("--crop", help="x,y,w,h zoom region in canvas px (full-res)")
     r.add_argument("--width", type=int, help="width of the crop image (default 512)")
+    r.add_argument("--grid", type=float, nargs="?", const=0, help="coordinate grid in canvas px (step, default auto); implies --preview")
+    r.add_argument("--mark", action="append", help="check a placement: x,y or x,y,w,h (canvas px); repeat or ';'-separate")
+    r.add_argument("--boxes", action="store_true", help="outline each layer's visible bounds and print them")
     r.add_argument("--seed", type=int, default=0, help="value of SEED inside the script")
     r.add_argument("--scale", type=float, help="render scale for the final (2 = twice the pixels)")
     r.add_argument("--quality", type=int, default=92)

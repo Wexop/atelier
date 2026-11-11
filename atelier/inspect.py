@@ -831,5 +831,117 @@ def compare(a, b, path="compare.jpg", labels=("A", "B"), amp=4.0, split=True, wi
     return stats
 
 
+# ---------------------------------------------------------------- placement grid
+_BOX_COLS = [(255, 70, 70), (70, 200, 255), (255, 200, 40), (120, 255, 120), (255, 90, 230), (255, 150, 60),
+             (160, 130, 255), (60, 255, 210)]
+
+
+def _nice_step(span, target=10):
+    raw = max(span, 1e-6) / target
+    p = 10 ** math.floor(math.log10(raw))
+    return next(m * p for m in (1, 2, 2.5, 5, 10) if raw <= m * p + 1e-9)
+
+
+def layer_boxes(c, thresh=0.02) -> list:
+    """Bounding box of every layer's visible pixels, in canvas px: [(index, name, (x, y, w, h)) | None box]."""
+    out = []
+    for i, L in enumerate(c.layers):
+        a = L.px[..., 3]
+        rows, cols = np.flatnonzero((a > thresh).any(1)), np.flatnonzero((a > thresh).any(0))
+        box = None
+        if len(rows):
+            s = c.s
+            x0, y0, x1, y1 = cols[0] / s, rows[0] / s, (cols[-1] + 1) / s, (rows[-1] + 1) / s
+            box = (round(x0), round(y0), round(x1 - x0), round(y1 - y0))
+        out.append((i, L.name or "", box))
+    return out
+
+
+def grid_view(img, path=None, width=768, step=None, region=None, marks=(), boxes=False) -> dict:
+    """Image with a coordinate grid labelled in canvas px (labels in margins, never over the art).
+    region=(x, y, w, h) zooms on a part (nearest upscale, labels stay in canvas px).
+    marks: (x, y) points or (x, y, w, h) rects to check a placement. boxes=True (Canvas only) outlines
+    each layer's visible bounds with its index:name. Returns {"step", "region", "boxes"}."""
+    rgb, s = _src(img)
+    H, W = rgb.shape[:2]
+    cw, ch = W / s, H / s
+    rx, ry, rw, rh = region if region is not None else (0, 0, cw, ch)
+    x0, y0 = max(0, int(rx * s)), max(0, int(ry * s))
+    x1, y1 = min(W, max(x0 + 1, round((rx + rw) * s))), min(H, max(y0 + 1, round((ry + rh) * s)))
+    rx, ry, rw, rh = x0 / s, y0 / s, (x1 - x0) / s, (y1 - y0) / s
+    k = width / (x1 - x0)                                    # display px per raster px
+    dh = max(1, round((y1 - y0) * k))
+    crop = rgb[y0:y1, x0:x1]
+    view = cv2.resize(crop, (width, dh), interpolation=cv2.INTER_NEAREST if k > 1 else cv2.INTER_AREA)
+    step = step or _nice_step(max(rw, rh), 12)
+    ML, MT, MR, MB = 46, 20, 8, 8
+    im = Image.new("RGB", (ML + width + MR, MT + dh + MB), (24, 24, 28))
+    im.paste(Image.fromarray(to_u8(view, False)), (ML, MT))
+    d = ImageDraw.Draw(im, "RGBA")
+    f = _font(11, "mono")
+    px = lambda x: ML + (x - rx) * s * k   # canvas x -> display x
+    py = lambda y: MT + (y - ry) * s * k
+    lab = (lambda v: f"{v:g}") if step < 1 else (lambda v: str(int(round(v))))
+    # minor grid (half step) when there is room
+    if step * s * k / 2 >= 22:
+        for v in np.arange(math.ceil(rx / (step / 2)) * step / 2, rx + rw + 1e-6, step / 2):
+            d.line([(px(v), MT), (px(v), MT + dh)], fill=(255, 255, 255, 38))
+        for v in np.arange(math.ceil(ry / (step / 2)) * step / 2, ry + rh + 1e-6, step / 2):
+            d.line([(ML, py(v)), (ML + width, py(v))], fill=(255, 255, 255, 38))
+    for v in np.arange(math.ceil(rx / step) * step, rx + rw + 1e-6, step):
+        x = px(v)
+        d.line([(x + 1, MT), (x + 1, MT + dh)], fill=(0, 0, 0, 70))
+        d.line([(x, MT), (x, MT + dh)], fill=(255, 255, 255, 120))
+        t = lab(v)
+        tw = d.textlength(t, font=f)
+        d.text((min(max(x - tw / 2, ML - 4), ML + width - tw), 3), t, fill=(220, 220, 220), font=f)
+    for v in np.arange(math.ceil(ry / step) * step, ry + rh + 1e-6, step):
+        y = py(v)
+        d.line([(ML, y + 1), (ML + width, y + 1)], fill=(0, 0, 0, 70))
+        d.line([(ML, y), (ML + width, y)], fill=(255, 255, 255, 120))
+        t = lab(v)
+        d.text((ML - 4 - d.textlength(t, font=f), min(max(y - 7, MT - 2), MT + dh - 12)), t, fill=(220, 220, 220), font=f)
+    # centre lines of the whole canvas
+    for v in (cw / 2,):
+        if rx <= v <= rx + rw:
+            d.line([(px(v), MT), (px(v), MT + dh)], fill=(255, 60, 200, 110))
+    for v in (ch / 2,):
+        if ry <= v <= ry + rh:
+            d.line([(ML, py(v)), (ML + width, py(v))], fill=(255, 60, 200, 110))
+
+    def tag(x, y, t, col):
+        tw = d.textlength(t, font=f)
+        x = min(max(x, ML), ML + width - tw - 4)
+        y = min(max(y, MT), MT + dh - 14)
+        d.rectangle([x, y, x + tw + 4, y + 13], fill=(0, 0, 0, 170))
+        d.text((x + 2, y), t, fill=col, font=f)
+
+    found = []
+    if boxes and hasattr(img, "layers"):
+        found = layer_boxes(img)
+        for i, name, b in found:
+            if b is None or (b[2] >= cw * 0.98 and b[3] >= ch * 0.98):
+                continue                                      # empty or full-canvas (background) layer
+            col = _BOX_COLS[i % len(_BOX_COLS)]
+            bx0, by0, bx1, by1 = px(b[0]), py(b[1]), px(b[0] + b[2]), py(b[1] + b[3])
+            d.rectangle([bx0, by0, bx1, by1], outline=col + (230,), width=2)
+            tag(bx0 + 2, by0 + 2, f"{i}:{name}" if name else str(i), col)
+    for m in marks:
+        col = (255, 255, 0)
+        if len(m) == 4:
+            d.rectangle([px(m[0]), py(m[1]), px(m[0] + m[2]), py(m[1] + m[3])], outline=col + (255,), width=2)
+            tag(px(m[0]) + 2, py(m[1] + m[3]) + 2, ",".join(f"{v:g}" for v in m), col)
+        else:
+            x, y = px(m[0]), py(m[1])
+            d.line([(x - 9, y), (x + 9, y)], fill=(0, 0, 0, 200), width=3)
+            d.line([(x, y - 9), (x, y + 9)], fill=(0, 0, 0, 200), width=3)
+            d.line([(x - 8, y), (x + 8, y)], fill=col + (255,), width=1)
+            d.line([(x, y - 8), (x, y + 8)], fill=col + (255,), width=1)
+            tag(x + 6, y + 4, f"{m[0]:g},{m[1]:g}", col)
+    if path:
+        _save(im, path)
+    return {"step": step, "region": (round(rx, 2), round(ry, 2), round(rw, 2), round(rh, 2)), "boxes": found}
+
+
 __all__ = ["metrics", "contact_sheet", "compare", "guides", "composition", "saliency",
-           "analyze_reference", "match_palette", "transfer_tone"]
+           "analyze_reference", "match_palette", "transfer_tone", "grid_view", "layer_boxes"]

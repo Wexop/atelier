@@ -11,6 +11,8 @@ Check: `atelier palette` · `atelier brushes` · `atelier fx` (signatures).
 0. Pick the style guide (see Styles below) and read it; none fits → `styles/new-style.md`.
 1. Write `scene.py` (30–80 lines, `from atelier import *`, build a Canvas `c`, end with `c.save(__file__[:-3] + ".png")`).
 2. `atelier render scene.py --preview` → `scene_prev.jpg` (512 px, real low-res render, saves skipped). **Read the image.**
+   Placing things: `--grid [step]` labels canvas-px coords in the margins, `--boxes` outlines + prints each layer's bounds
+   (name layers: `c.layer(name="sun")`), `--mark x,y` / `--mark x,y,w,h` checks a target spot. Works with `--crop` too.
 3. `atelier inspect scene.py` → `scene_sheet.jpg`: view, 5-value study + thirds/focal, clip map, histogram, palette, 4 auto zooms
    (aliasing, banding, noise, highlight) labelled `--crop x,y,w,h`, metrics + red flags. **Read it.** Zoom: `atelier render scene.py --crop x,y,w,h`.
 4. ≥3 look-and-fix rounds (`atelier compare old.png new.png` for A/B), then `atelier render scene.py` (final; `--scale 2`, `--seed N` → `SEED`).
@@ -24,7 +26,7 @@ Errors print one line `scene.py:LINE: Type: message` (`--debug` for traceback).
 ## Canvas & layers (core)
 ```
 c = Canvas(w, h, bg=None, pixel=False)      # pixel=True: no AA, fixed scale, nearest-neighbour export
-L = c.layer(blend="normal", opacity=1, mask=None)   # new layer, BECOMES CURRENT; c.use(L) to switch back
+L = c.layer(blend="normal", opacity=1, mask=None, name=None)   # new layer, BECOMES CURRENT; c.use(L) to switch back
 blends: normal multiply screen overlay soft_light hard_light add subtract color_dodge color_burn darken lighten difference hue saturation color luminosity
 c.fill(src, mask=None) · c.erase(mask) · c.place(img|path, x=None, y=None, scale=None(cover), rot=0, fit="cover"|"contain", blend, opacity) -> layer
 c.apply(*fx, mask=None)   # MERGES all layers, then effects (final grading);  L.apply(*fx, mask=None) = one layer
@@ -140,6 +142,7 @@ c.crowd(n, box=(x0, y0, x1, y1), horizon=y, height=near_px, tint=(haze, .5), dog
 ```
 m = metrics(c|path|arr)   # noise (<1 clean, >4 grainy) aliasing (% hard steps, >35 jaggy) banding clip_shadows/highlights flags[...]
 contact_sheet(c, "sheet.jpg") · compare(a, b, "ab.jpg") · guides(c) / composition(c) → focal, balance, tilt · analyze_reference("ref.jpg")
+grid_view(c, "g.jpg", step=None, region=(x,y,w,h), marks=[(x,y)|(x,y,w,h)], boxes=True) · layer_boxes(c) → [(i, name, (x,y,w,h)|None)]
 ```
 
 ## Styles — read the matching guide before writing the scene

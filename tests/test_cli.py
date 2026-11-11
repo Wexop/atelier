@@ -83,3 +83,14 @@ def test_preview_scale_shared_by_helper_canvases(tmp_path):
     p.write_text("from atelier import *\nc = Canvas(2000, 1000)\nsub = Canvas(500, 500)\n", encoding="utf8")
     _, g = run_scene(str(p), width=500, preview=True, nosave=True)
     assert g["c"].W == 500 and g["sub"].W == 125        # same scale (0.25), not blown up to 500 px
+
+
+def test_grid_overlay(tmp_path, capsys):
+    s = write(tmp_path)
+    assert main(["render", s, "--grid", "--boxes", "--mark", "200,100;10,10,40,20"]) == 0
+    out = capsys.readouterr().out
+    assert "grid 50 px" in out and "layer 0" in out
+    assert (tmp_path / "scene_prev.jpg").exists() and not (tmp_path / "final.png").exists()
+    assert main(["render", s, "--crop", "150,50,100,100", "--grid", "10"]) == 0
+    assert (tmp_path / "scene_crop.jpg").exists()
+    assert main(["render", s, "--grid", "--mark", "1,2,3"]) == 2
