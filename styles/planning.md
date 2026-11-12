@@ -29,7 +29,7 @@ FOCUS = "keeper"      # layer or group name (or x, y, w, h): `atelier critique` 
 | colour | palette, temperature split (warm light / cool shadow or reverse) | hierarchy saturation ratio >= 1 |
 | texture | texture and detail, **mostly on the focus**; background simpler | detail and sharpness ratios >= 1 |
 | depth | every element past the primitive: second tone, rim facing the light, broken silhouette (see below) | no "simple" issue |
-| contact | subject anchored: `c.reflect(...)` on water, cast/contact shadow on ground, ripples, wake, dust | no "grounding" issue |
+| contact | everything anchored: `c.reflect` on water, contact shadows, bases sunk behind the ground, ambient tint | no grounding / floating / ambient / style issue |
 | finish | edges (lose some away from the focus), atmosphere, grading | final `critique` + `inspect` at full res |
 Use `--grid --boxes` while placing; fix by name (`c["sun"].move_to(...)`), never by guessing new numbers blind.
 

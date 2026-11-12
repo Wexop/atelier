@@ -17,7 +17,8 @@ Check: `atelier palette` · `atelier brushes` · `atelier fx` (signatures).
 3. `atelier inspect scene.py` → `scene_sheet.jpg`: view, 5-value study + thirds/focal, clip map, histogram, palette, 4 auto zooms
    (aliasing, banding, noise, highlight) labelled `--crop x,y,w,h`, metrics + red flags. **Read it.** Zoom: `atelier render scene.py --crop x,y,w,h`.
    `atelier critique scene.py` → ranked problems with fixes (contrast, balance, near-miss alignment, tangents, edge crowding,
-   hidden layers, **simple** (bare flat primitives = placeholder look), **style** mix (vector-flat on a rendered ground),
+   hidden layers, **simple** (bare flat primitives = placeholder look), **style** mix (flat vector on a rendered ground: high),
+   **floating** (flat base hovering over a curved support), **ambient** (colour cast off the scene light),
    **grounding** (focus floats: no shadow / reflection / ripples), **hierarchy**: does `FOCUS = "layer"` (or `--focus`) win on
    contrast, sharpness, detail, saturation, squint test?)
    + `scene_critique.jpg` with numbered boxes. One element per named layer; names survive `c.apply()`.
@@ -176,6 +177,8 @@ Each gives recipe, rules, pitfalls and an example script. Several can be mixed (
   render the objects in 3D under the same sun (`scene_sky` + same camera) or stay fully flat/painted. `critique` flags "style".
 - Every element needs more than a primitive in one colour: sun = disc + gradient + halo rings, cloud = lobed silhouette + lit
   underside + rim, water = bands + glitter + reflections, subject = rim light + contact (reflection / shadow / ripples).
+- Integration: a flat base on a curved surface lifts at a corner: extend it down and `.below("ground")`; tint every lit
+  element toward the scene's ambient colour (only light sources keep their own). Fix every style/floating/ambient issue.
 - `c.layer()` changes the current target: later `c.text/...` go to that layer (bad if it is `multiply`). Call `c.layer()` or `c.use(L)`.
 - `c.apply()` merges all layers. Use `L.apply()` to keep layers.
 - `shade(strength)` depends on field frequency: ≈1 for big forms, ≈.05 for fine textures (fabric).

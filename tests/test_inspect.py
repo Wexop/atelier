@@ -217,3 +217,29 @@ def test_critique_flags_style_mix():
     c.layer(name="ground").fill(fbm(60, seed=1).ramp(["#203040", "#b0c0d0"]))   # textured, full frame
     c.layer(name="house").rect(150, 100, 100, 120, fill="#804030")
     assert any(t["kind"] == "style" for t in critique(c)["issues"])
+
+
+def test_critique_flags_lifted_corner_and_accepts_sunk_base():
+    from atelier import critique, svg
+    def scene(sunk):
+        c = Canvas(400, 300)
+        c.layer(name="sky").fill("#6a5a90")
+        c.layer(name="sea").rect(0, 220, 400, 80, fill="#2a2440")
+        c.layer(name="hill").draw(svg("M 60 222 C 140 150 260 150 340 222 Z"), fill="#30283f")
+        c.layer(name="house").rect(200, 140, 70, 45 if sunk else 33, fill="#1a1428")   # flat base on a slope
+        if sunk:
+            c["house"].below("hill")
+        return c
+    fl = lambda c: [t for t in critique(c)["issues"] if t["kind"] == "floating"]
+    assert fl(scene(False)) and fl(scene(False))[0]["layers"] == ["house", "hill"]
+    assert not fl(scene(True))
+
+
+def test_critique_flags_element_off_ambient_light():
+    from atelier import critique, gradient
+    c = Canvas(400, 300)
+    c.layer(name="sky").fill(gradient(["#f0a060", "#e07040"]))                         # warm dusk everywhere
+    c.layer(name="rock").rect(140, 150, 120, 100, fill="#5a6a9a")                     # cool, lit elsewhere
+    c.layer(name="lamp").circle(80, 80, 20, fill="#fff8e0")                            # light source: fine
+    names = [t["layers"] for t in critique(c)["issues"] if t["kind"] == "ambient"]
+    assert ["rock"] in names and ["lamp"] not in names

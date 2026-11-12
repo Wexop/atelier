@@ -110,9 +110,11 @@ c.draw(rock, fill="#251c38")
 c.draw(rock & rect(0, 0, 905, H), fill="#33264a")                                # sun-side facet
 c.draw(rock - rock.move(3, 2), fill=WARM, opacity=.7)
 c.layer(name="cottage")
-c.rect(960, HZ - 52, 50, 28, fill="#2b2140")
+c.rect(960, HZ - 52, 50, 50, fill="#2b2140")                                     # walls sink into the rock
 c.polygon([(954, HZ - 52), (985, HZ - 72), (1016, HZ - 52)], fill="#1f1830")
 c.line(954, HZ - 52, 985, HZ - 72, stroke=WARM, width=1.5, opacity=.7)
+c["cottage"].below("island")                                                       # the rock hides its base
+c.layer(name="cottage/window")
 c.rect(972, HZ - 44, 9, 9, fill="#ffd38a")                                         # lit window: someone waits
 c.cur.apply(glow(8, .6, "#ffc870"))
 c.layer(name="lighthouse")

@@ -977,6 +977,79 @@ def _elements(img, H, W, s):
     return out
 
 
+def _floating(els, H, W, s, cw, ch, Lm):
+    """Elements whose flat base sits on a support (another element right below) along part of its width but
+    hovers above it elsewhere, or shows a seam (e.g. the support's light rim) under it: a corner in the air.
+    Lm = image lightness (grain removed). -> [(sev, kind, msg, box, layers)]."""
+    out, maxgap = [], max(4, int(0.04 * H))
+    rows = np.arange(H)[:, None]
+    nxt = {}
+    parts = {e["name"]: cv2.connectedComponents((e["a"] > 0.5).astype(np.uint8), 8)[0] - 1 for e in els}
+    els = [e for e in els if parts[e["name"]] <= 8]            # patterns (waves, glitter, stars) neither rest nor support
+    for E in els:
+        m = E["a"] > 0.5
+        x, y, w, h = E["b"]
+        if m.sum() < 30 or w * h > 0.3 * cw * ch:
+            continue
+        cols = np.flatnonzero(m.any(0))
+        if len(cols) < 6 or len(cols) > 0.8 * W:
+            continue
+        bot = H - 1 - np.argmax(m[::-1, cols], 0)                 # lowest pixel per column
+        base = bot >= bot.max() - max(1, round(s))                  # the flat base (round bottoms, eaves lift off)
+        if base.sum() < max(6, 0.25 * len(cols)):
+            continue
+        cols, bot = cols[base], bot[base]
+        g = E["name"].split("/")[0]
+        best = None
+        for S in els:
+            if S is E or S["name"].split("/")[0] == g:
+                continue
+            sx, sy, sw, sh = S["b"]
+            if sx > x + w or sx + sw < x or sy > y + h + maxgap / s or sy + sh < y + h - 2:
+                continue
+            sm = S["a"] > 0.5
+            if (sm & m).sum() > 0.3 * m.sum():                     # S is behind E (sky, sea): not a support
+                continue
+            if S["name"] not in nxt:                                # first S row at or below each row
+                nxt[S["name"]] = np.minimum.accumulate(np.where(sm, rows, H)[::-1], 0)[::-1]
+            below = np.clip(bot + 1, 0, H - 1)
+            gap = (nxt[S["name"]][below, cols] - below).astype(F32)
+            near = gap <= maxgap
+            if near.sum() < 0.5 * len(cols):
+                continue                                           # S is not under E
+            touch = (gap == 0) & near
+            fl = (gap >= 1) & near
+            run = np.diff(np.flatnonzero(np.diff(np.r_[0, touch.astype(np.int8), 0])).reshape(-1, 2), 1)
+            solid = run.size and run.max() >= max(3, 0.1 * len(cols))     # a real contact, not posts / a railing
+            k = max(3, round(4 * s))                                  # and a support with body, not a 1-2 px line
+            tc = cols[touch]
+            if solid and len(tc):
+                yy_ = np.clip(bot[touch][None] + np.arange(1, k + 1)[:, None], 0, H - 1)
+                solid = sm[yy_, tc[None]].all(0).mean() >= 0.5
+            corner = None
+            if solid and touch.mean() >= 0.4:                         # lifted corner: a run of gaps at one end
+                for idx in (np.arange(len(cols)), np.arange(len(cols))[::-1]):
+                    e_ = fl[idx]
+                    r = len(e_) if e_.all() else int(np.argmin(e_))
+                    if r >= max(3, 0.04 * len(cols)) and gap[idx[:r]].max() >= max(2, 1.5 * s):
+                        corner = np.zeros(len(cols), bool)
+                        corner[idx[:r]] = True
+                        break
+            fl = corner if corner is not None else (gap > max(2, 1.5 * s)) & near   # or a clear gap along the base
+            if solid and fl.sum() >= max(3, 0.05 * len(cols)):
+                gmax = max(1.0, float(gap[fl].max())) / s
+                if best is None or gmax > best[0]:
+                    xs = cols[fl]
+                    best = (gmax, S["name"], xs.min() / s, xs.max() / s, float(bot[fl].min()) / s)
+        if best:
+            gmax, sn, x0, x1, yb = best
+            out.append(("mid", "floating", f"'{E['name']}' rests on '{sn}' but part of its base hovers up to {gmax:.0f}px "
+                        f"above it (x {x0:.0f}-{x1:.0f}): sink the base into '{sn}' (extend it down and draw it behind "
+                        f"'{sn}' with .below('{sn}')) or follow the surface.", (x0 - 6, yb - 6, x1 - x0 + 12, gmax + 12),
+                        [E["name"], sn]))
+    return out
+
+
 def _primitive_share(mask, min_area):
     """(share of a mask's area made of bare-primitive parts (ellipse, rect, capsule), number of parts)."""
     n, lab_, st, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), 8)
@@ -1223,7 +1296,6 @@ def critique(img, path=None, width=1024, max_align=6, focus=None) -> dict:
                         f"edge or give it >= {2 * tol_e:.0f}px.", e["b"], [e["name"]])
         # ---- rendering depth: bare primitives / one flat colour (placeholder look)
         Lm = cv2.medianBlur(to_u8(np.clip(lab[..., 0], 0, 1), False), 5).astype(F32) / 255   # grain removed
-        fine = np.abs(Lm - cv2.GaussianBlur(Lm, (0, 0), max(1.0, 1.2 * s)))
         gb_big = lambda a: (lambda b: b is None or b[2] * b[3] > 0.3 * cw * ch)(_bbox_canvas(a, s))   # backdrops
         groups = {}
         for e in els:
@@ -1246,23 +1318,31 @@ def critique(img, path=None, width=1024, max_align=6, focus=None) -> dict:
             elif prim > 0.8 and len(es) == 1 and parts <= 8:     # many small parts = a pattern (waves, stars)
                 add("mid" if gb[2] * gb[3] > 0.02 * cw * ch else "low", "simple", f"'{g}' is built only from bare primitives (ellipse / rect / capsule): break the "
                     "silhouette so it reads as the thing, not a diagram.", gb, [e["name"] for e in es])
-        # ---- style mix: flat vector elements on a textured (photo / painted) ground, or the reverse
-        used = np.zeros((H, W), bool)
+        # ---- style mix: piecewise-flat (vector) elements on a continuous-tone (rendered / photo / painted) ground.
+        # Medium fingerprint = share of perfectly flat pixels once grain is removed; crushed darks are flat in any medium.
+        gm = cv2.GaussianBlur(Lm, (0, 0), 0.8)
+        grad = np.hypot(cv2.Sobel(gm, cv2.CV_32F, 1, 0, ksize=3), cv2.Sobel(gm, cv2.CV_32F, 0, 1, ksize=3)) / 8
+        flatpx, lit = grad < 0.002, gm > 0.12
+        small = np.zeros((H, W), bool)
         for e in els:
-            used |= e["a"] > 0.05
-        bgc = cv2.erode((~used).astype(np.uint8), _disk(max(1, round(2 * s)))) > 0
-        if bgc.mean() > 0.1:
-            tb = float(np.mean(fine[bgc]))
-            for g, es in groups.items():
-                ga = np.clip(sum(e["a"] for e in es), 0, 1)
-                core = cv2.erode((ga > 0.5).astype(np.uint8), _disk(max(1, round(2 * s)))) > 0
-                if core.mean() < 0.001:
+            if not gb_big(e["a"]):
+                small |= e["a"] > 0.05
+        bd = (cv2.erode((~small).astype(np.uint8), _disk(max(1, round(2 * s)))) > 0) & lit
+        if bd.mean() > 0.15 and float(flatpx[bd].mean()) < 0.5:
+            fb, mixed = float(flatpx[bd].mean()), {}
+            for e in els:
+                core = (cv2.erode((e["a"] > 0.5).astype(np.uint8), _disk(max(1, round(2 * s)))) > 0) & lit
+                if core.sum() < max(40, 0.0003 * H * W) or gb_big(e["a"]):
                     continue
-                te = float(np.mean(fine[core]))
-                if tb > 0.004 and te < 0.55 * tb and not gb_big(ga):
-                    add("mid", "style", f"style mix: '{g}' is smooth vector-flat (texture {te:.3f}) on a textured / "
-                        f"rendered ground ({tb:.3f}), so it looks pasted on: render it in the same medium (3D, same "
-                        "brush or filter, same texture) or simplify the ground to match.", _bbox_canvas(ga, s), [e["name"] for e in es])
+                fe = float(flatpx[core].mean())
+                if fe > 0.65:
+                    mixed.setdefault(e["name"].split("/")[0], []).append((e, fe))
+            for g, lst in mixed.items():
+                ga = np.clip(sum(e["a"] for e, _ in lst), 0, 1)
+                add("high", "style", f"style mix: '{g}' is flat vector ({max(f for _, f in lst):.0%} flat pixels) on a "
+                    f"continuous-tone rendered / photo / painted ground ({fb:.0%} flat): it looks cut out and pasted on. "
+                    "Use ONE medium: model it in 3D under the same sun (scene_sky + matching camera) or paint it with the "
+                    "same tool, or make the whole picture flat.", _bbox_canvas(ga, s), [e["name"] for e, _ in lst])
         # ---- grounding: does anything anchor the focus where it meets the ground / water?
         if isinstance(focus, str):
             fes = [e for e in els if e["name"] == focus or e["name"].startswith(focus + "/")]
@@ -1285,6 +1365,28 @@ def critique(img, path=None, width=1024, max_align=6, focus=None) -> dict:
                     add("mid", "grounding", f"nothing anchors '{focus}' where it meets the ground / water (no contact "
                         "shadow, reflection, ripples): it floats like a sticker. Add c.reflect(name, waterline) on water, "
                         "a cast / contact shadow (L.duplicate('x/shadow')) on ground.", (fx0, bot - 10, fw0, 20), [focus])
+        # ---- ambient light: elements must share the scene's colour cast (else they look lit somewhere else)
+        amb_m = (cv2.erode((~small).astype(np.uint8), _disk(max(1, round(2 * s)))) > 0) & (Lm > 0.12)
+        if amb_m.mean() > 0.15:
+            amb = np.median(lab[amb_m][:, 1:], 0)
+            na = float(np.hypot(*amb))
+            if na > 0.03:
+                for e in els:
+                    core = (cv2.erode((e["a"] > 0.5).astype(np.uint8), _disk(max(1, round(2 * s)))) > 0) & (Lm > 0.12)
+                    if core.sum() < max(40, 0.0005 * H * W) or gb_big(e["a"]) or any(t in e["name"].lower() for t in _TEXTY):
+                        continue
+                    if float(np.median(Lm[core])) > 0.8:
+                        continue                                       # a light source has its own colour
+                    ec = np.median(lab[core][:, 1:], 0)
+                    proj = float(ec @ amb) / na
+                    if proj < 0.2 * na and float(np.hypot(*(ec - amb))) > 0.04:
+                        add("mid", "ambient", f"'{e['name']}' ignores the scene light: its colour cast ({ec[0]:+.2f},{ec[1]:+.2f}) "
+                            f"is off the ambient ({amb[0]:+.2f},{amb[1]:+.2f}), so it looks lit somewhere else. Tint it toward "
+                            f"the ambient ({_hex(oklab2rgb(np.array([[[.5, *amb]]], F32))[0, 0])}) or add a colour layer "
+                            "(blend='color', opacity .2-.4) over it; light accents (lamps) are fine.", e["b"], [e["name"]])
+        # ---- floating: resting on something, but part of its base hovers above it
+        for t_ in _floating(els, H, W, s, cw, ch, Lm):
+            add(*t_)
         # ---- near-tangent elements
         tol_t = max(3 / s, 0.006 * max(cw, ch))
         small = [e for e in els if e["b"][2] * e["b"][3] < 0.6 * cw * ch]
