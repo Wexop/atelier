@@ -243,3 +243,18 @@ def test_critique_flags_element_off_ambient_light():
     c.layer(name="lamp").circle(80, 80, 20, fill="#fff8e0")                            # light source: fine
     names = [t["layers"] for t in critique(c)["issues"] if t["kind"] == "ambient"]
     assert ["rock"] in names and ["lamp"] not in names
+
+
+def test_critique_flags_near_miss_seam_under_an_object():
+    from atelier import critique, svg, rect
+    def scene(split):
+        c = Canvas(400, 300)
+        c.layer(name="sky").fill("#8a7ab0")
+        rock = svg("M 40 250 C 120 170 280 170 360 250 Z")
+        c.layer(name="rock").draw(rock, fill="#2a2040")
+        c.draw(rock & rect(0, 0, split, 300), fill="#4a3a66")                   # lit facet ends at x = split
+        c.layer(name="tower").rect(190, 80, 30, 115, fill="#c0b0d0")             # tower edges at 190 / 220
+        c.draw(rect(205, 80, 15, 115), fill="#7a6a90")                           # its own split at 205
+        return [t for t in critique(c)["issues"] if t["kind"] == "seam"]
+    assert scene(201)                       # 4 px off the tower split: a near miss
+    assert not scene(205)                   # continues the tower's split: fine

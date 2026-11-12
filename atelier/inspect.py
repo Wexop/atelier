@@ -1050,6 +1050,71 @@ def _floating(els, H, W, s, cw, ch, Lm):
     return out
 
 
+def _edges_1d(prof, thr=0.035):
+    """x positions of steps in a 1D lightness profile (NaN = outside the region)."""
+    d = np.abs(np.r_[0, 0, prof[4:] - prof[:-4], 0, 0])
+    d = np.nan_to_num(d, nan=0.0)
+    pk = (d > thr) & (d >= np.r_[0, d[:-1]]) & (d > np.r_[d[1:], 0])
+    return np.flatnonzero(pk)
+
+
+def _seams(els, H, W, s, cw, Lm):
+    """Near-miss seams across a contact: an edge in the support right under an object (a facet split, a
+    light/shadow line) that stops a few px off the object's own edges, e.g. a rock's shading split 10 px
+    beside the tower standing on it. -> [(sev, kind, msg, box, layers)]."""
+    out, tol = [], max(4, 0.015 * W)
+    parts = {e["name"]: cv2.connectedComponents((e["a"] > 0.5).astype(np.uint8), 8)[0] - 1 for e in els}
+    els = [e for e in els if parts[e["name"]] <= 8]
+    k, gap0 = max(4, round(8 * s)), max(2, round(3 * s))
+    for E in els:
+        m = E["a"] > 0.5
+        x, y, w, h = E["b"]
+        cols = np.flatnonzero(m.any(0))
+        if len(cols) < 6 or w * h > 0.3 * cw * (H / s):
+            continue
+        bot = H - 1 - np.argmax(m[::-1, cols], 0)
+        yb = int(bot.max())
+        base = cols[bot >= yb - max(1, round(s))]
+        if yb + gap0 + k >= H or yb - gap0 - k < 0 or len(base) < 6:
+            continue
+        g = E["name"].split("/")[0]
+        for S in els:
+            if S is E or S["name"].split("/")[0] == g:
+                continue
+            sm = S["a"] > 0.5
+            if (sm & m).sum() > 0.3 * m.sum():
+                continue
+            pad = int(tol)
+            x0, x1 = max(1, cols.min() - pad), min(W - 1, cols.max() + pad + 1)
+            rows_b = slice(yb + gap0, yb + gap0 + k)
+            inside = sm[rows_b, x0:x1].all(0)
+            under = sm[yb + 1: yb + 1 + gap0, cols].any(0)
+            if inside.sum() < 0.5 * (x1 - x0) or under.mean() < 0.5:
+                continue                                           # S is not the ground right under E
+            others = np.zeros((H, W), bool)                         # reflections, shadows... drawn over the ground
+            for o in els[els.index(S) + 1:]:                         # layers stacked above the ground
+                if o is not E:
+                    others |= o["a"] > 0.05
+            clean = inside & ~others[rows_b, x0:x1].any(0)
+            pb = np.where(clean, Lm[rows_b, x0:x1].mean(0), np.nan)
+            pa = Lm[yb - gap0 - k: yb - gap0, x0:x1].mean(0)       # the object just above its base
+            eb, ea = _edges_1d(pb) + x0, _edges_1d(pa) + x0
+            if not len(ea):
+                continue
+            for xb in eb:
+                if not (base.min() + 2 <= xb <= base.max() - 2):
+                    continue                                       # only ground edges running out from under it
+                d = np.abs(ea - xb)
+                j = int(np.argmin(d))
+                if 1.5 * s < d[j] <= tol:
+                    out.append(("mid", "seam", f"an edge in '{S['name']}' right under '{E['name']}' (x {xb / s:.0f}) stops "
+                                f"{d[j] / s:.0f}px off the object's edge at x {ea[j] / s:.0f}: line them up (continue the "
+                                f"object's split / side into the ground) or move the ground edge clearly away.",
+                                (min(xb, ea[j]) / s - 8, yb / s - 14, abs(xb - ea[j]) / s + 16, 28), [E["name"], S["name"]]))
+                    break
+    return out
+
+
 def _primitive_share(mask, min_area):
     """(share of a mask's area made of bare-primitive parts (ellipse, rect, capsule), number of parts)."""
     n, lab_, st, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), 8)
@@ -1385,7 +1450,7 @@ def critique(img, path=None, width=1024, max_align=6, focus=None) -> dict:
                             f"the ambient ({_hex(oklab2rgb(np.array([[[.5, *amb]]], F32))[0, 0])}) or add a colour layer "
                             "(blend='color', opacity .2-.4) over it; light accents (lamps) are fine.", e["b"], [e["name"]])
         # ---- floating: resting on something, but part of its base hovers above it
-        for t_ in _floating(els, H, W, s, cw, ch, Lm):
+        for t_ in _floating(els, H, W, s, cw, ch, Lm) + _seams(els, H, W, s, cw, Lm):
             add(*t_)
         # ---- near-tangent elements
         tol_t = max(3 / s, 0.006 * max(cw, ch))

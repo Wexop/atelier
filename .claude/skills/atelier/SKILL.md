@@ -18,7 +18,7 @@ Check: `atelier palette` · `atelier brushes` · `atelier fx` (signatures).
    (aliasing, banding, noise, highlight) labelled `--crop x,y,w,h`, metrics + red flags. **Read it.** Zoom: `atelier render scene.py --crop x,y,w,h`.
    `atelier critique scene.py` → ranked problems with fixes (contrast, balance, near-miss alignment, tangents, edge crowding,
    hidden layers, **simple** (bare flat primitives = placeholder look), **style** mix (flat vector on a rendered ground: high),
-   **floating** (flat base hovering over a curved support), **ambient** (colour cast off the scene light),
+   **floating** (flat base hovering over a curved support), **seam** (ground edge under an object a few px off its edges), **ambient** (colour cast off the scene light),
    **grounding** (focus floats: no shadow / reflection / ripples), **hierarchy**: does `FOCUS = "layer"` (or `--focus`) win on
    contrast, sharpness, detail, saturation, squint test?)
    + `scene_critique.jpg` with numbered boxes. One element per named layer; names survive `c.apply()`.

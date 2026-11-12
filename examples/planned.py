@@ -149,16 +149,21 @@ hull = svg(f"M {bx-105} {by-26} C {bx-40} {by-18} {bx+60} {by-18} {bx+112} {by-3
 c.draw(hull, fill=INK)
 c.draw(hull & svg(f"M {bx-110} {by-28} C {bx-40} {by-20} {bx+60} {by-20} {bx+115} {by-32} L {bx+115} {by-16} "
                   f"C {bx+60} {by-8} {bx-40} {by-8} {bx-110} {by-16} Z"), fill="#231a33")          # top strake
-c.layer(name="keeper/body")
-c.draw(svg(f"M {bx-4} {by-20} C {bx-8} {by-68} {bx+6} {by-102} {bx+30} {by-110} "
-           f"L {bx+40} {by-96} C {bx+26} {by-78} {bx+28} {by-48} {bx+36} {by-20} Z"), fill=INK)   # coat
-c.circle(bx + 37, by - 122, 12.5, fill=INK)                                       # head
-c.ellipse(bx + 37, by - 132, 20, 4.5, fill=INK)                                   # cap brim
-c.rect(bx + 27, by - 142, 20, 10, r=4, fill=INK)                                   # cap crown
-c.line([(bx + 30, by - 96), (bx + 4, by - 72), (bx - 12, by - 66)], stroke=INK, width=8)   # arms to the oar
-c.layer(name="keeper/oar")
-c.line(bx - 8, by - 70, bx - 150, by + 20, stroke=INK, width=5)
-c.draw(ellipse(bx - 152, by + 19, 14, 4).rotate(-30), fill=INK)                   # blade entering the water
+c.layer(name="keeper/body")                          # the catch: facing the stern (right), leaning in, arms reaching
+c.draw(svg(f"M {bx-8} {by-20} C {bx-14} {by-64} {bx+2} {by-96} {bx+30} {by-106} "
+           f"L {bx+44} {by-92} C {bx+34} {by-70} {bx+30} {by-44} {bx+30} {by-20} Z"), fill=INK)   # coat, rounded back
+c.line([(bx + 14, by - 30), (bx + 62, by - 44), (bx + 72, by - 22)], stroke=INK, width=14)   # thigh + shin, knee up
+c.circle(bx + 42, by - 118, 12.5, fill=INK)                                       # head, forward
+c.rect(bx + 30, by - 140, 22, 12, r=5, fill=INK)                                   # cap crown
+c.ellipse(bx + 54, by - 129, 12, 3.5, fill=INK)                                   # cap peak points where he looks
+c.line([(bx + 34, by - 92), (bx + 64, by - 80), (bx + 94, by - 72)], stroke=INK, width=8)   # arms reach past the knees
+c.layer(name="keeper/oar")                          # hands forward -> oarlock -> blade behind him, nearer to us
+hand, lock = np.array([bx + 96, by - 72]), np.array([bx + 18, by - 25])
+blade = lock + (lock - hand) * 1.85
+c.line(*hand, *blade, stroke=INK, width=5)
+c.line(*(hand + [-2, -2.5]), *(lock + [-2, -2.5]), stroke=WARM, width=1.3, opacity=.8)   # lit edge of the handle
+c.draw(ellipse(*blade, 15, 4.5).rotate(-28), fill=INK)                            # blade entering the water
+c.circle(*lock, 3.5, fill=INK)                                                    # oarlock
 rim = c["keeper/body"].duplicate("keeper/rim")                                     # rim light from the sun (left)
 rim.fill("#ffb27a", mask=rim.alpha > 0)
 rim.move(-3, -2)
@@ -175,9 +180,9 @@ for k, (rx, ry, o) in enumerate([(122, 7, .45), (150, 12, .22)]):
 c.line(bx - 95, by + 3, bx + 100, by + 3, stroke=PALE, width=1.6, opacity=.75)    # bright waterline
 c.layer(name="splash")
 for r, o in [(9, .7), (20, .3)]:
-    c.draw(ellipse(bx - 152, by + 22, r * 1.6, r * .32).outline(1.3), fill=PALE, opacity=o)
+    c.draw(ellipse(blade[0], blade[1] + 3, r * 1.6, r * .32).outline(1.3), fill=PALE, opacity=o)
 for dx, dy, r in [(-6, -10, 1.8), (4, -16, 1.3), (12, -8, 1.5), (-16, -5, 1.1)]:
-    c.circle(bx - 152 + dx, by + 20 + dy, r, fill=PALE, opacity=.85)
+    c.circle(blade[0] + dx, blade[1] + 1 + dy, r, fill=PALE, opacity=.85)
 
 c.apply(vignette(.3), grain(.018, seed=1))
 c.save(__file__[:-3] + ".png")
