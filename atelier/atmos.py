@@ -64,11 +64,12 @@ def _region(self, region):
 
 # ------------------------------------------------------------------ smoke
 def _layer_smoke(self, x, y, height, width=None, drift=0.3, spread=3.0, color="#d9d9d9", shadow=None,
-                 density=0.8, curl=1.0, wisps=0.6, light=(120, 40), seed=0):
+                 density=0.8, curl=1.0, wisps=0.6, light=(120, 40), t=0.0, seed=0):
     """Rising smoke plume from (x, y) (source, canvas px) up `height` px. width = source width (default
     height/8), spread = top width / source width, drift = sideways lean at the top (fraction of height,
     + = right, wind), curl = turbulence, wisps = breakup into strands. Lit side `color`, far side `shadow`
-    (default: darker, cooler). light = (azimuth, elev) like the anime helpers (0 = from right, 90 = top)."""
+    (default: darker, cooler). light = (azimuth, elev) like the anime helpers (0 = from right, 90 = top).
+    t = time 0..1 (animation: billows churn, loops at t=1)."""
     w0 = width or height / 8
     rng = np.random.default_rng(seed)
     top_w = w0 * spread
@@ -91,9 +92,13 @@ def _layer_smoke(self, x, y, height, width=None, drift=0.3, spread=3.0, color="#
     sv = np.interp(u, q, vt)
     turb = curl * (0.2 + 1.3 * uc)
     oy = rng.uniform(0, 50)
+    tu, tv = 0.8 * (math.cos(2 * math.pi * t) - 1), 0.8 * math.sin(2 * math.pi * t)   # 0 at t = 0
+    sx_, sv_ = sx, sv
+    sx, sv = sx + tu * uc, sv + tv
     wx = _fbm(sx * 0.3, sv * 0.3 + oy, seed + 2, 3) * turb
     wy = _fbm(sx * 0.3 + 40, sv * 0.3 + oy, seed + 3, 3) * turb
     n = _fbm(sx * 0.5 + wx * 1.2, sv * 0.5 + wy * 1.2 + oy, seed + 4, 5) * 0.5 + 0.5
+    sx, sv = sx_, sv_
     br = wisps * (0.35 + 0.9 * uc)                          # breakup grows with height
     d = sx + wx * 0.7 + (0.5 - n) * 1.4 * br                # billowy, ragged outline; interior stays filled
     core = np.exp(-d * d * 1.3)
@@ -116,11 +121,12 @@ def _layer_smoke(self, x, y, height, width=None, drift=0.3, spread=3.0, color="#
 
 # ------------------------------------------------------------------ rain
 def _layer_rain(self, n=700, angle=12.0, length=(14, 46), width=1.0, color="#cfdbe8", opacity=0.55, region=None,
-                depth=3, splashes=0, ground=None, seed=0):
+                depth=3, splashes=0, ground=None, t=0.0, seed=0):
     """Rain streaks over the layer: n drops, angle = lean from vertical (deg, + = falling to the right),
     length = (far, near) streak px, width = near streak width px, depth = 1-4 distance bands (far = short,
     thin, faint). region = mask where it rains (e.g. not under a roof). splashes = number of small crown
-    splashes on `ground` (mask; default bottom 30%). Pair with wet reflections and a cool, low-contrast grade."""
+    splashes on `ground` (mask; default bottom 30%). t = time 0..1 (animation: drops fall, loops at t=1).
+    Pair with wet reflections and a cool, low-contrast grade."""
     s, H, W = self.s, self.H, self.W
     rng = np.random.default_rng(seed)
     a = np.zeros((H, W), F32)
@@ -135,9 +141,13 @@ def _layer_rain(self, n=700, angle=12.0, length=(14, 46), width=1.0, color="#cfd
         thick = max(1, int(round(width * s * (0.5 + 0.5 * z))))
         xs = rng.uniform(-L * dx - 10, W + 10, m)
         ys = rng.uniform(-L, H + L, m)
+        if t:                                           # fall: near bands faster, whole cycles -> seamless loop
+            span = H + 2 * L
+            y2 = (ys + L + t * (band + 1) * span) % span - L
+            xs, ys = xs + (y2 - ys) * dx / max(dy, 1e-3), y2
         ls = L * rng.uniform(0.6, 1.2, m)
         vals = (255 * rng.uniform(0.45, 1.0, m)).astype(int)
-        sh = 4
+        sh = 4                                          # sub-pixel line coords (1/16 px)
         for px, py, l, v in zip(xs, ys, ls, vals):
             p0 = (int(px * 16), int(py * 16))
             p1 = (int((px + dx * l) * 16), int((py + dy * l) * 16))
@@ -170,9 +180,11 @@ def _layer_rain(self, n=700, angle=12.0, length=(14, 46), width=1.0, color="#cfd
 
 
 # ------------------------------------------------------------------ snowfall
-def _layer_snowfall(self, n=500, size=(1.2, 5.0), color="#ffffff", opacity=0.9, region=None, bokeh=0.06, seed=0):
+def _layer_snowfall(self, n=500, size=(1.2, 5.0), color="#ffffff", opacity=0.9, region=None, bokeh=0.06, t=0.0,
+                    seed=0):
     """Falling snow: n soft flakes, size = (far, near) radius px; nearer flakes are bigger and brighter.
-    bokeh = fraction of very near, large, blurred out-of-focus flakes. region = mask where it snows."""
+    bokeh = fraction of very near, large, blurred out-of-focus flakes. region = mask where it snows.
+    t = time 0..1 (animation: flakes fall and sway, loops at t=1)."""
     s, H, W = self.s, self.H, self.W
     rng = np.random.default_rng(seed)
     z = rng.uniform(0, 1, n) ** 2.2                       # most flakes far away
@@ -181,6 +193,11 @@ def _layer_snowfall(self, n=500, size=(1.2, 5.0), color="#ffffff", opacity=0.9, 
     r = np.where(big, size[1] * s * rng.uniform(2.2, 3.5, n), r)
     alpha = np.where(big, rng.uniform(0.25, 0.45, n), 0.45 + 0.55 * z * rng.uniform(0.8, 1, n))
     xs, ys = rng.uniform(0, W, n), rng.uniform(0, H, n)
+    ph = rng.uniform(0, 1, n)
+    k = 1 + np.floor(z * 1.999) + big                         # whole fall cycles per clip: near flakes faster
+    span = H + 4 * r
+    ys = (ys + 2 * r + t * k * span) % span - 2 * r
+    xs = xs + np.sin(2 * np.pi * (t * k + ph)) * (2 + 6 * z) * s   # sway (same at t = 0 and t = 1)
     a = np.zeros((H, W), F32)
     edges = [0, 1.2, 2, 3.5, 6, 10, 1e9]
     for lo, hi in zip(edges[:-1], edges[1:]):
@@ -190,7 +207,9 @@ def _layer_snowfall(self, n=500, size=(1.2, 5.0), color="#ffffff", opacity=0.9, 
         buf = np.zeros((H, W), F32)
         rm = float(np.median(r[sel]))
         for px, py, rr, al in zip(xs[sel], ys[sel], r[sel], alpha[sel]):
-            cv2.circle(buf, (int(px * 16), int(py * 16)), max(int(rr * 0.7 * 16), 4), float(al), -1, cv2.LINE_AA, 4)
+            rd = max(rr * 0.7, 0.75)                   # sub-pixel flakes would twinkle as they move: keep >= 0.75 px,
+            al = al * min(1.0, (rr * 0.7 / rd) ** 2)   # same light energy
+            cv2.circle(buf, (int(px * 16), int(py * 16)), int(rd * 16), float(al), -1, cv2.LINE_AA, 4)
         sig = 0.35 * rm + 0.35 if rm < 10 else 0.5 * rm
         buf = cv2.GaussianBlur(buf, (0, 0), sig) * (1.6 if rm < 10 else 1.2)
         a = np.maximum(a, np.clip(buf, 0, 1))
@@ -201,10 +220,10 @@ def _layer_snowfall(self, n=500, size=(1.2, 5.0), color="#ffffff", opacity=0.9, 
 
 
 # ------------------------------------------------------------------ mist
-def _layer_mist(self, y0, y1, color="#e6ecf0", density=0.75, wisps=0.6, scale=1.0, x0=None, x1=None, seed=0):
+def _layer_mist(self, y0, y1, color="#e6ecf0", density=0.75, wisps=0.6, scale=1.0, x0=None, x1=None, t=0.0, seed=0):
     """Low fog bank: transparent at y0 (top), thickest at y1 (canvas px), fading out just below y1.
     wisps = horizontal streak breakup, scale = streak size. Put it between depth planes (behind the
-    foreground, over the far hills) to separate them; stack two banks for depth."""
+    foreground, over the far hills) to separate them; stack two banks for depth. t = time 0..1 (wisps drift, loops)."""
     x0 = 0 if x0 is None else x0
     x1 = self.w if x1 is None else x1
     hgt = max(y1 - y0, 1)
@@ -212,12 +231,13 @@ def _layer_mist(self, y0, y1, color="#e6ecf0", density=0.75, wisps=0.6, scale=1.
     if b is None:
         return self
     box, gx, gy = b
-    t = (gy - y0) / hgt
-    prof = _sstep(0, 0.85, t) ** 1.3 * (1 - _sstep(1.0, 1.25, t))
+    v = (gy - y0) / hgt
+    prof = _sstep(0, 0.85, v) ** 1.3 * (1 - _sstep(1.0, 1.25, v))
     k = 1 / (hgt * 1.4 * scale)
-    wy = _fbm(gx * k * 0.5, gy * k * 0.5, seed + 1, 2) * 0.6
-    n = _fbm(gx * k * 0.35, (gy * k + wy) * 2.6, seed + 2, 5) * 0.5 + 0.5
-    m = _fbm(gx * k * 1.2 + 7, (gy * k + wy) * 5.0, seed + 3, 3) * 0.5 + 0.5
+    ou, ov = 0.9 * (math.cos(2 * math.pi * t) - 1), 0.9 * math.sin(2 * math.pi * t)   # loops; 0 at t = 0
+    wy = _fbm(gx * k * 0.5 + ou, gy * k * 0.5 + ov, seed + 1, 2) * 0.6
+    n = _fbm(gx * k * 0.35 + ou, (gy * k + wy) * 2.6 + ov * 0.3, seed + 2, 5) * 0.5 + 0.5
+    m = _fbm(gx * k * 1.2 + 7 - ou, (gy * k + wy) * 5.0 - ov * 0.3, seed + 3, 3) * 0.5 + 0.5
     br = 1 - wisps + wisps * np.clip(1.7 * n * (0.6 + 0.6 * m) - 0.15, 0, 1.3)
     side = _sstep(x0, x0 + hgt * 0.8, gx) * (1 - _sstep(x1 - hgt * 0.8, x1, gx)) if (x0 > 0 or x1 < self.w) else 1
     a = prof * br * density * side

@@ -144,9 +144,13 @@ c.sparkles(n, region=mask, size=(6, 16), color, rays=4, glow=.6, seed)   # star 
 ```
 c.smoke(x, y, height, width=h/8, drift=.3 (lean, + right), spread=3, curl=1, wisps=.6, color, shadow, light=(az, elev), density)
 c.rain(n=700, angle=12, length=(far, near), width, opacity=.55, depth=3, region=mask, splashes=0, ground=mask) · c.snowfall(n=500, size=(1.2, 5), bokeh=.06, region)
-c.mist(y0, y1, color, density=.75, wisps=.6, x0, x1)   # fog bank: clear at y0, thickest at y1; put it between depth planes
-c.lightning(x0, y0, x1, y1, branches=4, jag=.16, width=2.5, color, glow=1)   # rain and smoke share one wind
+c.mist(y0, y1, color, density=.75, wisps=.6, x0, x1)  # fog: clear at y0, thick at y1 · c.lightning(x0, y0, x1, y1, branches=4, jag=.16, width=2.5, color, glow=1)
 ```
+
+## Animation (anim) — read `styles/animation.md`
+`atelier animate scene.py --frames 24 --fps 12 [--out x.gif|.webp|.mp4] [--width 480] --check` · script reads `T` (0..1; 0 for stills; T=1 loops to 0), `FRAME`, `FRAMES`
+ease(t, "linear|in|out|in_out|sine|back|bounce") · key(T, [(0, a), (.5, b), (1, a)], ease) numbers / tuples / "#hex" · wave(T, cycles, phase, lo, hi)
+pingpong(T) · orbit(T, r) → fbm(...).move(*orbit(T, .3)) loops · c.rain/snowfall/mist/smoke(..., t=T) · seeds fixed · `--check` → scene_frames.jpg + flags (static, jump, seam, flicker)
 
 ## Figures (figure) — feet at (x, y), height = standing px (animals: withers)
 ```
@@ -169,14 +173,10 @@ grid_view(c, "g.jpg", step=None, region=(x,y,w,h), marks=[(x,y)|(x,y,w,h)], boxe
 ## Styles — read the matching guide before writing the scene
 Guides live in `styles/` next to this file (if missing: `https://raw.githubusercontent.com/Wexop/atelier/main/styles/<name>.md`).
 Each gives recipe, rules, pitfalls and an example script. Several can be mixed (e.g. anime + flat).
-- `anime.md` — painted anime landscapes: cel clouds, trees, mountains, rim light, god rays, sparkles
-- `oil.md` — oil (`paint_like`) and watercolour washes
-- `photoreal.md` — path-traced still life / product, terrain landscapes, sea and sky
-- `comic.md` — ligne claire / toon from 3D, engraving, ink filters
-- `flat.md` — flat vector, posters, typography, people, silhouette scenes
-- `pixel.md` — pixel art with palettes and dithering
-- `abstract.md` — generative abstracts from warped fields
-- `planning.md` — **process** for complex pictures: plan, thumbnails, passes, hierarchy rules (use with a style guide)
+- `anime.md` cel clouds, trees, mountains, rim light · `oil.md` oil (`paint_like`), watercolour · `pixel.md` palettes, dithering
+- `photoreal.md` path-traced still life, terrain, sea and sky · `comic.md` ligne claire / toon from 3D, engraving, ink filters
+- `flat.md` flat vector, posters, typography, people, silhouettes · `abstract.md` generative abstracts from warped fields
+- `planning.md` — **process** for complex pictures: plan, thumbnails, passes, hierarchy · `animation.md` — **motion**: T, keys, loops, checks
 - `new-style.md` — **no guide fits**: study the look, map it to primitives, paint, then save a new `styles/<name>.md`
 
 ## Pitfalls
@@ -191,6 +191,7 @@ Each gives recipe, rules, pitfalls and an example script. Several can be mixed (
 - `shade(strength)` depends on field frequency: ≈1 for big forms, ≈.05 for fine textures (fabric).
 - `tone_map` on 2D art greys pure white — it is for HDR/3D; use `curves`/`levels` on illustrations.
 - Radial `gradient(center=(cx, cy))`: cx is a fraction of the width, cy of the height (radius in height units).
+- Mask `soft=` (disc, band, zone, top...) is an absolute feather in canvas-height units, NOT a fraction of the radius: `disc(.5, .5, .05, soft=1)` covers the whole image. Use soft ≈ r or less.
 - Hard thresholds alias: use `aastep`/`smoothstep`, not `f > .5`, for visible edges.
 - Noise `scale` = features per canvas height. Shape coords = canvas px; Field coords = 0–1.
 - Cost: `pathtrace` ≈ 30–60 µs/path (1200×800 @ 8 spp ≈ 5 min on 2 cores, previews 4× fewer spp) — draft with `c.render`;

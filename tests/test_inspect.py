@@ -258,3 +258,17 @@ def test_critique_flags_near_miss_seam_under_an_object():
         return [t for t in critique(c)["issues"] if t["kind"] == "seam"]
     assert scene(201)                       # 4 px off the tower split: a near miss
     assert not scene(205)                   # continues the tower's split: fine
+
+
+def test_critique_spares_light_sources_and_soft_atmosphere():
+    from atelier import critique, gradient, smoothstep, fbm, top
+    c = Canvas(400, 300)
+    c.layer(name="sky").fill(gradient(["#1c2238", "#2a3350"]))                       # cool night
+    c.layer(name="rock").rect(150, 160, 100, 90, fill="#7a5a3a")                      # warm, lit elsewhere
+    c.layer(name="beacon").circle(80, 80, 14, fill="#e8782e")                         # orange light: fine
+    c.layer(name="veil").fill("#2e3756", mask=smoothstep(0.45, 0.7, fbm(3, seed=2)) * top(0.5, soft=0.1))  # haze
+    issues = critique(c)["issues"]
+    amb = [t["layers"] for t in issues if t["kind"] == "ambient"]
+    con = [t["layers"] for t in issues if t["kind"] == "contrast"]
+    assert ["rock"] in amb and ["beacon"] not in amb
+    assert ["veil"] not in con

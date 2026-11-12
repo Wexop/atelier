@@ -10,9 +10,12 @@
   atelier sheet a.py b.py c.py [--seeds 1,2,3]   variants side by side, scored by critique
   atelier compare a.png b.png             A | B | amplified diff | split  (scenes render at preview size)
   atelier reference ref.jpg               palette, value key, light direction of a reference image
+  atelier animate scene.py --frames 24 --fps 12 [--out a.gif|.webp|.mp4] [--width 480] [--check]
+                                          render once per frame with T = 0..1 -> animation (+ motion check sheet)
   atelier palette | brushes | fx          short reference lists
 A scene is a Python script that builds a Canvas (named `canvas` or `c`, else the last one created).
-`SEED` (from --seed, default 0) is available inside the script.
+`SEED` (from --seed, default 0) is available inside the script, and `T` (0 for stills; 0..1 when animating),
+`FRAME`, `FRAMES`.
 """
 from __future__ import annotations
 
@@ -30,7 +33,7 @@ class SceneError(Exception):
     pass
 
 
-def run_scene(path, width=None, scale=None, seed=0, preview=False, nosave=False, threads=None):
+def run_scene(path, width=None, scale=None, seed=0, preview=False, nosave=False, threads=None, extra=None):
     """Execute a scene script with render settings; returns (canvas, namespace)."""
     if not os.path.exists(path):
         raise SceneError(f"scene not found: {path}")
@@ -38,7 +41,8 @@ def run_scene(path, width=None, scale=None, seed=0, preview=False, nosave=False,
     core.CONFIG.update(width=width, scale=scale, preview=preview, nosave=nosave, seed=seed, threads=threads,
                        _width_scale=None)
     core._LAST[0] = None
-    g = {"__name__": "__main__", "__file__": os.path.abspath(path), "SEED": seed}
+    g = {"__name__": "__main__", "__file__": os.path.abspath(path), "SEED": seed, "T": 0.0, "FRAME": 0, "FRAMES": 1}
+    g.update(extra or {})
     d = os.path.dirname(os.path.abspath(path))
     sys.path.insert(0, d)
     try:
@@ -254,6 +258,28 @@ def cmd_compare(a):
           f"PSNR {r['psnr']} dB bbox {r['bbox']}")
 
 
+def cmd_animate(a):
+    from .anim import render_frames, save_anim, motion_sheet, motion_metrics, continuity_probes
+    t0 = time.time()
+    width = a.width or None
+    frames = render_frames(a.scene, a.frames, width=width, seed=a.seed, preview=a.check_only,
+                           threads=a.threads)
+    if not a.check_only:
+        out = a.out or _stem(a.scene, "", ".gif")
+        save_anim(frames, out, a.fps)
+        print(f"animation {len(frames)} frames {frames[0].shape[1]}x{frames[0].shape[0]} @ {a.fps} fps -> {out} "
+              f"({time.time() - t0:.1f}s)")
+    if a.check or a.check_only:
+        probes = continuity_probes(a.scene, a.frames, width=width, seed=a.seed, preview=a.check_only, threads=a.threads)
+        sp = _stem(a.scene, "_frames", ".jpg")
+        m = motion_sheet(frames, sp, a.fps, probes=probes)
+        print(f"motion check -> {sp}: typical change {m['typical']}, flicker {m['flicker']}, loop seam {m['seam']}x")
+    else:
+        m = motion_metrics(frames)
+    for f in m["flags"]:
+        print(f"  ! {f}")
+
+
 def cmd_reference(a):
     from .inspect import analyze_reference
     r = analyze_reference(_load_target(a.image, a), k=a.colors)
@@ -340,6 +366,17 @@ def main(argv=None):
     rf.add_argument("image")
     common(rf)
     rf.add_argument("--colors", type=int, default=6)
+    an = sub.add_parser("animate", help="render the scene once per frame (T = 0..1) into a GIF / WebP / MP4")
+    an.add_argument("scene")
+    an.add_argument("--frames", type=int, default=24)
+    an.add_argument("--fps", type=int, default=12)
+    an.add_argument("--out", help="output .gif (default) | .webp | .mp4")
+    an.add_argument("--width", type=int, default=480, help="frame width in px (default 480; 0 = canvas size)")
+    an.add_argument("--check", action="store_true", help="also write <scene>_frames.jpg: frames, onion skin, motion curve")
+    an.add_argument("--check-only", action="store_true", help="only the motion check sheet (fast preview frames)")
+    an.add_argument("--seed", type=int, default=0)
+    an.add_argument("--threads", type=int)
+    an.add_argument("--debug", action="store_true")
     sub.add_parser("palette", help="list built-in palettes")
     sub.add_parser("brushes", help="list brushes and scatter kinds")
     sub.add_parser("fx", help="list effects with signatures")
@@ -348,7 +385,7 @@ def main(argv=None):
         p.print_help()
         return 0
     try:
-        {"render": cmd_render, "inspect": cmd_inspect, "critique": cmd_critique, "sheet": cmd_sheet, "compare": cmd_compare, "reference": cmd_reference,
+        {"render": cmd_render, "inspect": cmd_inspect, "critique": cmd_critique, "sheet": cmd_sheet, "compare": cmd_compare, "reference": cmd_reference, "animate": cmd_animate,
          "palette": cmd_palette, "brushes": cmd_brushes, "fx": cmd_fx}[a.cmd](a)
     except SceneError as e:
         print(f"error: {e}", file=sys.stderr)

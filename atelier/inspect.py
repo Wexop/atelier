@@ -937,6 +937,25 @@ def grid_view(img, path=None, width=768, step=None, region=None, marks=(), boxes
 # ---------------------------------------------------------------- critique
 SEV_COL = {"high": (255, 70, 70), "mid": (255, 170, 40), "low": (110, 200, 255)}
 _TEXTY = ("text", "title", "label", "caption", "headline", "logo")
+_LIGHTY = ("fire", "flame", "light", "lamp", "glow", "rim", "flash", "bolt", "lightning", "sun", "spark", "ember",
+           "neon", "candle", "moon", "star", "halo", "beam", "ray")
+_SOFTY = ("cloud", "mist", "fog", "smoke", "haze", "rain", "snow", "steam", "glow", "halo", "dust", "spray")
+
+
+def _named(e, words):
+    return any(w in (e["name"] or "").lower() for w in words)
+
+
+def _is_soft(e):
+    """Atmospheric element (mist, smoke, clouds...): mostly semi-transparent, meant to melt into what is behind."""
+    a = e["a"]
+    on = a > 0.05
+    return _named(e, _SOFTY) or (on.sum() > 30 and float(((a > 0.05) & (a < 0.85)).sum()) / float(on.sum()) > 0.5)
+
+
+def _is_light(e, Lm, core):
+    """Light source / lit accent (fire, lamp, bolt, rim light): keeps its own colour, ignores the ambient cast."""
+    return _named(e, _LIGHTY) or float(np.percentile(Lm[core], 75)) > max(0.6, float(np.percentile(Lm, 97)))
 
 
 def _lin(v):
@@ -1334,8 +1353,8 @@ def critique(img, path=None, width=1024, max_align=6, focus=None) -> dict:
             above.append((g, np.clip(a, 0, 1)))
         # ---- figure-ground contrast
         for e in els:
-            if e["vis"] < 0.5 or any(t in e["name"].lower() for t in ("reflection", "shadow")):
-                continue                                       # reflections / shadows are meant to sit low-contrast
+            if e["vis"] < 0.5 or any(t in e["name"].lower() for t in ("reflection", "shadow")) or _is_soft(e):
+                continue                                       # reflections, shadows, mist, smoke: meant to melt in
             inside = (e["a"] > 0.5).astype(np.uint8)
             if inside.sum() < 30:
                 continue
@@ -1447,7 +1466,7 @@ def critique(img, path=None, width=1024, max_align=6, focus=None) -> dict:
                     core = (cv2.erode((e["a"] > 0.5).astype(np.uint8), _disk(max(1, round(2 * s)))) > 0) & (Lm > 0.12)
                     if core.sum() < max(40, 0.0005 * H * W) or gb_big(e["a"]) or any(t in e["name"].lower() for t in _TEXTY):
                         continue
-                    if float(np.median(Lm[core])) > 0.8:
+                    if float(np.median(Lm[core])) > 0.8 or _is_light(e, Lm, core):
                         continue                                       # a light source has its own colour
                     lc = Lm[core]
                     sh = lc <= np.median(lc)                           # shadow half: where ambient light shows

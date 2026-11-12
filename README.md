@@ -39,6 +39,7 @@ render → look → fix loop, plus [style guides](styles) the agent reads only w
 | [pixel](styles/pixel.md) | pixel art with palettes and dithering |
 | [abstract](styles/abstract.md) | generative abstracts from warped fields |
 | [planning](styles/planning.md) | **process** for complex pictures: written plan + focus, grey thumbnails scored side by side, build passes, hierarchy rules (example: [planned.py](examples/planned.py)) |
+| [animation](styles/animation.md) | **motion**: the script reads `T`, keyframes and easing, seamless loops, GIF / WebP / MP4, motion check sheet (examples: [lava.py](examples/lava.py), [daynight.py](examples/daynight.py)) |
 | [new-style](styles/new-style.md) | **any look not listed**: study it, map it to the toolbox, paint it, then save it as a new guide |
 
 **If you are an AI agent:** run `pip install git+https://github.com/Wexop/atelier`, then read
@@ -96,6 +97,7 @@ atelier render night.py --grid --boxes --mark 880,230  # coordinate grid, layer 
 atelier critique night.py                  # ranked problems + fixes: contrast, balance, tangents, placeholders, style mix, floating bases, near-miss seams, ambient light, grounding, hierarchy
 atelier sheet a.py b.py c.py               # thumbnails / variants side by side with value studies and scores
 atelier render night.py                    # final render
+atelier animate night.py --frames 24 --check   # GIF loop (T = 0..1 in the script) + motion check sheet
 ```
 
 ## What's inside
