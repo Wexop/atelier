@@ -107,7 +107,7 @@ rock = union(svg(f"M 770 {HZ+4} C 820 {HZ-18} 900 {HZ-30} 960 {HZ-28} C 1010 {HZ
              svg(f"M 1050 {HZ+4} C 1075 {HZ-10} 1110 {HZ-10} 1130 {HZ+4} Z"),
              svg(f"M 740 {HZ+4} C 750 {HZ-5} 772 {HZ-6} 784 {HZ+4} Z"))
 c.draw(rock, fill="#251c38")
-c.draw(rock & rect(0, 0, 905, H), fill="#33264a")                                # sun-side facet
+c.draw(rock & polygon([(0, 0), (916, 0), (916, HZ - 34), (872, HZ + 6), (0, HZ + 6)]), fill="#33264a")   # sun-side facet, split under the tower
 c.draw(rock - rock.move(3, 2), fill=WARM, opacity=.7)
 c.layer(name="cottage")
 c.rect(960, HZ - 52, 50, 50, fill="#2b2140")                                     # walls sink into the rock
@@ -118,7 +118,7 @@ c.layer(name="cottage/window")
 c.rect(972, HZ - 44, 9, 9, fill="#ffd38a")                                         # lit window: someone waits
 c.cur.apply(glow(8, .6, "#ffc870"))
 c.layer(name="lighthouse")
-x0, x1, top, base = 896, 936, 190, HZ - 26
+x0, x1, top, base = 896, 936, 190, HZ - 12          # base sinks into the rock
 tower = polygon([(x0, base), (x0 + 7, top), (x1 - 7, top), (x1, base)])
 c.draw(tower, fill="#3a2d52")
 c.draw(tower & rect(0, 0, (x0 + x1) / 2 - 2, H), fill="#5a4470")                # lit left half
@@ -126,10 +126,12 @@ for yb in (250, 320):
     c.draw(tower & rect(0, yb, W, 22), fill="#6e2f48")
     c.draw(tower & rect(0, yb, (x0 + x1) / 2 - 2, 22), fill="#9a4658")
 c.draw(tower - tower.move(2, 0), fill=WARM, opacity=.6)                          # warm left edge
+c.rect(919, HZ - 50, 8, 16, r=3, fill="#241b36")                                   # door on the shadow side
 c.rect(x0 - 2, top - 8, x1 - x0 + 4, 8, fill="#251c38")                           # gallery
 for xr in range(int(x0), int(x1) + 1, 6):
     c.line(xr, top - 18, xr, top - 8, stroke="#251c38", width=1.2)
 c.line(x0 - 2, top - 18, x1 + 2, top - 18, stroke="#251c38", width=1.5)
+c["lighthouse"].below("island")                                                    # the rock (and its rim) overlaps the base
 c.layer(name="lamp")
 c.rect(x0 + 8, top - 38, x1 - x0 - 16, 22, fill="#ffe7a8")
 c.polygon([(x0 + 3, top - 38), (x0 + 20, top - 58), (x1 - 3, top - 38)], fill="#1f1830")
