@@ -148,3 +148,48 @@ def test_critique_clean_layout_has_no_layer_issues():
     c.layer(name="disc"); c.circle(300, 200, 80, fill="#1d2b44")
     issues = critique(c)["issues"]
     assert not [t for t in issues if t["layers"]]
+
+
+def _hier_scene(busy):
+    from atelier import fbm, band
+    c = Canvas(600, 400, bg="#7a9cc0")
+    c.layer(name="ground")
+    c.fill(fbm(18, seed=3).ramp(["#1d3b1d", "#c9e07a", "#0c1a0c"]) if busy else "#5d7a52", mask=band(0.45, 1.0))
+    c.layer(name="hero")
+    c.rect(280, 200, 40, 140, fill="#f2b233")
+    return c
+
+
+def test_hierarchy_flags_busy_background():
+    from atelier.inspect import hierarchy
+    busy = hierarchy(_hier_scene(True), focus="hero")
+    calm = hierarchy(_hier_scene(False), focus="hero")
+    assert busy["scores"]["detail"]["ratio"] < 0.9 and busy["scores"]["detail"]["best_other"] == "'ground'"
+    assert any("texture detail" in t[1] for t in busy["issues"])
+    assert calm["scores"]["detail"]["ratio"] > 1 and not any("texture detail" in t[1] for t in calm["issues"])
+    assert "squint" in calm and calm["focus"] == "'hero'"
+
+
+def test_critique_survives_apply_and_ignores_attached_and_fx_layers():
+    from atelier import vignette
+    from atelier.inspect import critique
+    c = Canvas(600, 400, bg="#335577")
+    c.layer(name="tower"); c.rect(300, 100, 30, 200, fill="#111111")
+    c.layer(name="lamp"); c.rect(300, 80, 30, 20, fill="#ffee99")          # attached on purpose (0 px gap)
+    c.layer(name="halo", blend="screen"); c.circle(100, 100, 60, fill="#553322")
+    c.layer(name="hero/rim"); c.rect(448, 248, 24, 64, fill="#ffaa66")
+    c.layer(name="hero/body"); c.rect(450, 250, 20, 60, fill="#000000")    # covers its own rim: fine
+    c.apply(vignette(.2))                                                   # merges every layer
+    assert [n for n, *_ in c.merged][:2] == ["tower", "lamp"]
+    r = critique(c, focus="hero")
+    layers = {n for t in r["issues"] for n in t["layers"]}
+    assert "halo" not in layers
+    assert not [t for t in r["issues"] if t["kind"] in ("tangent", "hidden")]
+    assert r["hierarchy"]["focus"] == "'hero'"
+
+
+def test_variant_sheet_scores(tmp_path):
+    from atelier.inspect import variant_sheet
+    res = variant_sheet([_hier_scene(True), _hier_scene(False)], tmp_path / "v.jpg", labels=["busy", "calm"], focus="hero")
+    assert [r["label"] for r in res] == ["busy", "calm"] and res[1]["score"] > res[0]["score"]
+    assert (tmp_path / "v.jpg").exists()

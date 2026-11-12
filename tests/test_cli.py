@@ -101,3 +101,14 @@ def test_critique_command(tmp_path, capsys):
     assert main(["critique", s, "--preview", "256"]) == 0
     assert "critique ->" in capsys.readouterr().out
     assert (tmp_path / "scene_critique.jpg").exists()
+
+
+def test_sheet_and_focus_from_scene(tmp_path, capsys):
+    body = 'from atelier import *\nFOCUS = "dot"\nc = Canvas(400, 200, bg="#204060")\nc.layer(name="dot")\n' \
+           'c.circle(200, 100, 30 + SEED, fill="white")\nc.save(OUT)\n'
+    s = write(tmp_path, body=body)
+    assert main(["critique", s, "--preview", "256"]) == 0
+    assert "focus 'dot'" in capsys.readouterr().out
+    assert main(["sheet", s, "--seeds", "0,5", "--preview", "256"]) == 0
+    out = capsys.readouterr().out
+    assert "scene seed 0" in out and "scene seed 5" in out and (tmp_path / "variants.jpg").exists()

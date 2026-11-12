@@ -9,6 +9,7 @@ Check: `atelier palette` · `atelier brushes` · `atelier fx` (signatures).
 
 ## Loop (always)
 0. Pick the style guide (see Styles below) and read it; none fits → `styles/new-style.md`.
+   Complex scene (subject + setting, 4+ elements, story, poster) → also `styles/planning.md`: PLAN + FOCUS, 3 grey thumbnails, passes.
 1. Write `scene.py` (30–80 lines, `from atelier import *`, build a Canvas `c`, end with `c.save(__file__[:-3] + ".png")`).
 2. `atelier render scene.py --preview` → `scene_prev.jpg` (512 px, real low-res render, saves skipped). **Read the image.**
    Placing things: `--grid [step]` labels canvas-px coords in the margins, `--boxes` outlines + prints each layer's bounds
@@ -16,7 +17,9 @@ Check: `atelier palette` · `atelier brushes` · `atelier fx` (signatures).
 3. `atelier inspect scene.py` → `scene_sheet.jpg`: view, 5-value study + thirds/focal, clip map, histogram, palette, 4 auto zooms
    (aliasing, banding, noise, highlight) labelled `--crop x,y,w,h`, metrics + red flags. **Read it.** Zoom: `atelier render scene.py --crop x,y,w,h`.
    `atelier critique scene.py` → ranked problems with fixes (contrast, balance, near-miss alignment, tangents, edge crowding,
-   hidden layers) + `scene_critique.jpg` with numbered boxes. Per-element checks need one element per named layer.
+   hidden layers, **hierarchy**: does `FOCUS = "layer"` (or `--focus`) win on contrast, sharpness, detail, saturation, squint test?)
+   + `scene_critique.jpg` with numbered boxes. One element per named layer; names survive `c.apply()`.
+   Variants: `atelier sheet a.py b.py` / `atelier sheet scene.py --seeds 1,2,3` → tiles + value studies + scores.
 4. ≥3 look-and-fix rounds (`atelier compare old.png new.png` for A/B), then `atelier render scene.py` (final; `--scale 2`, `--seed N` → `SEED`).
 Errors print one line `scene.py:LINE: Type: message` (`--debug` for traceback).
 
@@ -147,7 +150,8 @@ c.crowd(n, box=(x0, y0, x1, y1), horizon=y, height=near_px, tint=(haze, .5), dog
 ```
 m = metrics(c|path|arr)   # noise (<1 clean, >4 grainy) aliasing (% hard steps, >35 jaggy) banding clip_shadows/highlights flags[...]
 contact_sheet(c, "sheet.jpg") · compare(a, b, "ab.jpg") · guides(c) / composition(c) → focal, balance, tilt · analyze_reference("ref.jpg")
-critique(c, "cr.jpg") → {"issues": [{n, sev high|mid|low, kind, msg, box, layers}], metrics, composition}
+critique(c, "cr.jpg", focus=None) → {"issues": [{n, sev high|mid|low, kind, msg, box, layers}], metrics, composition, hierarchy}
+hierarchy(c, focus) → focus/rest ratios + squint + temperature · variant_sheet([c1, c2], "v.jpg", labels, focus) · critique_score(r)
 grid_view(c, "g.jpg", step=None, region=(x,y,w,h), marks=[(x,y)|(x,y,w,h)], boxes=True) · layer_boxes(c) → [(i, name, (x,y,w,h)|None)]
 ```
 
@@ -161,6 +165,7 @@ Each gives recipe, rules, pitfalls and an example script. Several can be mixed (
 - `flat.md` — flat vector, posters, typography, people, silhouette scenes
 - `pixel.md` — pixel art with palettes and dithering
 - `abstract.md` — generative abstracts from warped fields
+- `planning.md` — **process** for complex pictures: plan, thumbnails, passes, hierarchy rules (use with a style guide)
 - `new-style.md` — **no guide fits**: study the look, map it to primitives, paint, then save a new `styles/<name>.md`
 
 ## Pitfalls
@@ -168,6 +173,7 @@ Each gives recipe, rules, pitfalls and an example script. Several can be mixed (
 - `c.apply()` merges all layers. Use `L.apply()` to keep layers.
 - `shade(strength)` depends on field frequency: ≈1 for big forms, ≈.05 for fine textures (fabric).
 - `tone_map` on 2D art greys pure white — it is for HDR/3D; use `curves`/`levels` on illustrations.
+- Radial `gradient(center=(cx, cy))`: cx is a fraction of the width, cy of the height (radius in height units).
 - Hard thresholds alias: use `aastep`/`smoothstep`, not `f > .5`, for visible edges.
 - Noise `scale` = features per canvas height. Shape coords = canvas px; Field coords = 0–1.
 - Cost: `pathtrace` ≈ 30–60 µs/path (1200×800 @ 8 spp ≈ 5 min on 2 cores, previews 4× fewer spp) — draft with `c.render`;

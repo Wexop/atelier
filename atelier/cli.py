@@ -7,6 +7,7 @@
   atelier render scene.py --out a.png --scale 2 --seed 3
   atelier inspect scene.py|image.png      contact sheet (view, values, histogram, clipping, auto zooms, metrics)
   atelier critique scene.py|image.png     ranked problems + fixes (contrast, balance, alignment, tangents, edges)
+  atelier sheet a.py b.py c.py [--seeds 1,2,3]   variants side by side, scored by critique
   atelier compare a.png b.png             A | B | amplified diff | split  (scenes render at preview size)
   atelier reference ref.jpg               palette, value key, light direction of a reference image
   atelier palette | brushes | fx          short reference lists
@@ -167,19 +168,77 @@ def cmd_inspect(a):
         print(f"guides -> {g}")
 
 
+def _focus_arg(v):
+    if v is None or isinstance(v, (tuple, list)):
+        return v
+    parts = str(v).split(",")
+    if len(parts) == 4:
+        try:
+            return tuple(float(t) for t in parts)
+        except ValueError:
+            pass
+    return str(v)
+
+
+def _critique_target(path, a):
+    """-> (image or Canvas, focus) ; a scene may define FOCUS = "layer" | (x, y, w, h)."""
+    focus = _focus_arg(getattr(a, "focus", None))
+    if not path.lower().endswith(".py"):
+        return _load_target(path, a), focus
+    if getattr(a, "full", False):
+        cv, g = run_scene(path, scale=a.scale, seed=a.seed, nosave=True, threads=a.threads)
+    else:
+        cv, g = run_scene(path, width=a.preview, seed=a.seed, preview=True, nosave=True, threads=a.threads)
+    return cv, focus if focus is not None else _focus_arg(g.get("FOCUS"))
+
+
+def _hier_line(h):
+    sc = h.get("scores", {})
+    if not sc:
+        return f"  hierarchy: focus {h['focus']} (not enough area to compare)"
+    parts = [f"{k} {v['ratio']:.2f}x" + ("" if v["ratio"] >= 0.9 else f" (<{v['best_other']})") for k, v in sc.items()]
+    sq = f"  squint dL {h['squint']}" if "squint" in h else ""
+    return f"  hierarchy: focus {h['focus']} vs rest: {'  '.join(parts)}{sq}"
+
+
 def cmd_critique(a):
     from .inspect import critique
     t0 = time.time()
-    img = _load_target(a.target, a)
+    img, focus = _critique_target(a.target, a)
     out = a.out or _stem(a.target, "_critique", ".jpg")
-    r = critique(img, out)
+    r = critique(img, out, focus=focus)
     iss = r["issues"]
     n = {k: sum(t["sev"] == k for t in iss) for k in ("high", "mid", "low")}
     print(f"critique -> {out} ({time.time() - t0:.1f}s)  {n['high']} high, {n['mid']} mid, {n['low']} low")
+    print(_hier_line(r["hierarchy"]))
     for t in iss:
         print(f"  {t['n']:>2} [{t['sev']}] {t['kind']}: {t['msg']}" + (f"  box {','.join(map(str, t['box']))}" if t["box"] else ""))
     if not iss:
         print("  no issue found (still look at the image)")
+
+
+def cmd_sheet(a):
+    from .inspect import variant_sheet
+    t0 = time.time()
+    items, labels, focs = [], [], []
+    seeds = [int(v) for v in a.seeds.split(",")] if a.seeds else [a.seed]
+    for t in a.targets:
+        for sd in seeds:
+            a.seed = sd
+            img, fo = _critique_target(t, a)
+            items.append(img)
+            focs.append(fo)
+            labels.append(os.path.splitext(os.path.basename(t))[0] + (f" seed {sd}" if a.seeds else ""))
+    if a.labels:
+        labels = a.labels.split(",")
+        if len(labels) != len(items):
+            raise SceneError(f"--labels needs {len(items)} names")
+    out = a.out or os.path.join(os.path.dirname(a.targets[0]), "variants.jpg")
+    res = variant_sheet(items, out, labels=labels, focus=focs)
+    print(f"sheet -> {out} ({time.time() - t0:.1f}s)")
+    for r in sorted(res, key=lambda r: -r["score"]):
+        c = {k: sum(t["sev"] == k for t in r["issues"]) for k in ("high", "mid", "low")}
+        print(f"  {r['score']:>4}  {r['label']}  ({c['high']} high, {c['mid']} mid, {c['low']} low)")
 
 
 def cmd_compare(a):
@@ -264,6 +323,13 @@ def main(argv=None):
     cr = sub.add_parser("critique", help="ranked problems with fixes: contrast, balance, alignment, tangents, edges")
     cr.add_argument("target")
     common(cr, preview=1024)
+    cr.add_argument("--focus", help="intended focus: layer/group name or x,y,w,h (default: FOCUS in the scene, else auto)")
+    sh = sub.add_parser("sheet", help="variants / thumbnails side by side with critique scores")
+    sh.add_argument("targets", nargs="+")
+    common(sh, preview=512)
+    sh.add_argument("--seeds", help="render each scene with these seeds, e.g. 1,2,3,4")
+    sh.add_argument("--labels", help="comma-separated tile names")
+    sh.add_argument("--focus", help="intended focus for all (default: FOCUS in each scene, else auto)")
     cp = sub.add_parser("compare", help="A/B images or scenes side by side with a difference map")
     cp.add_argument("a")
     cp.add_argument("b")
@@ -282,7 +348,7 @@ def main(argv=None):
         p.print_help()
         return 0
     try:
-        {"render": cmd_render, "inspect": cmd_inspect, "critique": cmd_critique, "compare": cmd_compare, "reference": cmd_reference,
+        {"render": cmd_render, "inspect": cmd_inspect, "critique": cmd_critique, "sheet": cmd_sheet, "compare": cmd_compare, "reference": cmd_reference,
          "palette": cmd_palette, "brushes": cmd_brushes, "fx": cmd_fx}[a.cmd](a)
     except SceneError as e:
         print(f"error: {e}", file=sys.stderr)

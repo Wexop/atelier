@@ -38,6 +38,7 @@ render → look → fix loop, plus [style guides](styles) the agent reads only w
 | [flat](styles/flat.md) | flat vector, posters, typography, people, silhouette scenes |
 | [pixel](styles/pixel.md) | pixel art with palettes and dithering |
 | [abstract](styles/abstract.md) | generative abstracts from warped fields |
+| [planning](styles/planning.md) | **process** for complex pictures: written plan + focus, grey thumbnails scored side by side, build passes, hierarchy rules (example: [planned.py](examples/planned.py)) |
 | [new-style](styles/new-style.md) | **any look not listed**: study it, map it to the toolbox, paint it, then save it as a new guide |
 
 **If you are an AI agent:** run `pip install git+https://github.com/Wexop/atelier`, then read
@@ -91,7 +92,8 @@ atelier render night.py --preview          # fast 512 px look -> night_prev.jpg
 atelier inspect night.py                   # contact sheet: value study, clipping, auto zooms on defects, metrics
 atelier render night.py --crop 600,500,300,200   # full-res zoom on a region
 atelier render night.py --grid --boxes --mark 880,230  # coordinate grid, layer bounds, target mark
-atelier critique night.py                  # ranked problems + fixes: contrast, balance, alignment, tangents, edges
+atelier critique night.py                  # ranked problems + fixes: contrast, balance, alignment, tangents, hierarchy
+atelier sheet a.py b.py c.py               # thumbnails / variants side by side with value studies and scores
 atelier render night.py                    # final render
 ```
 
@@ -110,8 +112,8 @@ atelier render night.py                    # final render
 | `anime` | cel-shaded painted elements: cumulus clouds, trees, eroded mountain ranges; god rays, lens flare, sparkles |
 | `terrain` · `nature` | eroded terrain, physical sky and raymarched clouds, aerial perspective, lakes and seas (FFT waves), 2D and 3D trees, grass, flowers, ferns |
 | `figure` | posable people (15 poses, outfits, hair, body types) and animals in flat, line, ink or 3D mannequin styles; perspective crowds |
-| `inspect` | quality metrics (noise, aliasing, banding, clipping), contact sheets, A/B compare, composition guides, placement grid with layer bounds, self-critique (figure-ground contrast, balance, near-miss alignment, tangents), reference palette and tone transfer |
-| `cli` | `atelier render / inspect / critique / compare / reference / palette / brushes / fx` |
+| `inspect` | quality metrics (noise, aliasing, banding, clipping), contact sheets, A/B compare, composition guides, placement grid with layer bounds, self-critique (figure-ground contrast, balance, near-miss alignment, tangents, focus hierarchy, squint test), scored variant sheets, reference palette and tone transfer |
+| `cli` | `atelier render / inspect / critique / sheet / compare / reference / palette / brushes / fx` |
 
 The full API cheat sheet (made for an LLM) is [SKILL.md](SKILL.md), style guides are in [styles/](styles).
 Gallery scripts are in [examples/](examples).

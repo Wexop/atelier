@@ -954,7 +954,142 @@ def _disk(r):
     return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
 
 
-def critique(img, path=None, width=1024, max_align=6) -> dict:
+_HIER = {   # metric: (label, floor below which both sides count as "none", fix for the competitor, fix for the focus)
+    "contrast": ("value contrast", 0.03, "L.apply(contrast(-.3)) or haze it", "push light/dark contrast at its edges"),
+    "sharpness": ("edge sharpness", 0.02, "L.apply(blur(1.5)) / lose some edges", "keep its edges crisp"),
+    "detail": ("texture detail", 0.004, "simplify or blur its texture", "add texture / small detail"),
+    "saturation": ("saturation", 0.06, "L.apply(saturation(.6))", "saturate its accent"),
+}
+
+
+def _elements(img, H, W, s):
+    """Named elements of a Canvas, including layers already merged by c.apply() (kept as alpha snapshots):
+    [{"name", "a" (H x W coverage), "b" (x, y, w, h canvas px), "blend"}]. Hidden, empty and full-frame layers skipped."""
+    out = []
+    src = [(n, a.astype(F32) / 255, bl) for n, a, bl in getattr(img, "__dict__", {}).get("merged", []) if a.shape == (H, W)]
+    src += [(L.name or f"#{i}", L.px[..., 3] * L.opacity, L.blend) for i, L in enumerate(getattr(img, "layers", []))
+            if L.visible and L.opacity >= 0.3]
+    for name, a, blend in src:
+        bb = _bbox_canvas(a, s)
+        if bb is None or bb[2] * bb[3] > 0.9 * (W / s) * (H / s):
+            continue
+        out.append({"name": name, "a": a, "b": bb, "blend": blend})
+    return out
+
+
+def _bbox_canvas(a, s, thresh=0.02):
+    m = a > thresh
+    rows = np.flatnonzero(m.any(1))
+    if not len(rows):
+        return None
+    cols = np.flatnonzero(m.any(0))
+    x0, y0, x1, y1 = cols[0] / s, rows[0] / s, (cols[-1] + 1) / s, (rows[-1] + 1) / s
+    return round(x0), round(y0), round(x1 - x0), round(y1 - y0)
+
+
+def _focus_mask(img, focus, comp, els, H, W, s):
+    """Focus -> (bool mask H x W, label, layer names). focus: layer/group name | (x, y, w, h) | None (auto)."""
+    if isinstance(focus, str):
+        es = [e for e in els if e["name"] == focus or e["name"].startswith(focus + "/")]
+        if not es:
+            raise KeyError(f"focus layer {focus!r} not found; elements: {[e['name'] for e in els]}")
+        m = np.zeros((H, W), bool)
+        for e in es:
+            m |= e["a"] > 0.5
+        return m, f"'{focus}'", [e["name"] for e in es]
+    if focus is not None:
+        x, y, w, h = (round(v * s) for v in focus)
+        m = np.zeros((H, W), bool)
+        m[max(0, y):max(0, y + h), max(0, x):max(0, x + w)] = True
+        return m, f"region {','.join(str(round(v)) for v in focus)}", []
+    fx_, fy_ = comp["focal"]
+    yy, xx = min(H - 1, int(fy_ * s)), min(W - 1, int(fx_ * s))
+    for e in reversed(els):
+        if e["a"][yy, xx] > 0.5:
+            return e["a"] > 0.5, f"{e['name']!r} (auto: holds the focal point)", [e["name"]]
+    r = 0.1 * math.hypot(H, W)
+    gy, gx = np.ogrid[:H, :W]
+    return (gx - xx) ** 2 + (gy - yy) ** 2 <= r * r, f"focal area {fx_},{fy_} (auto)", []
+
+
+def hierarchy(img, focus=None) -> dict:
+    """Does the focus win? Compares the focus (layer/group name, (x, y, w, h) or auto) with every other
+    named layer and the background on value contrast, edge sharpness, texture detail and saturation;
+    plus a squint test (focus vs surroundings at 64 px) and light/shadow temperature split.
+    Returns {"focus", "scores": {metric: {"focus", "best_other", "ratio"}}, "squint", "temperature", "issues"}.
+    ratio < 1 means something else out-competes the focus on that metric."""
+    rgb, s = _src(img)
+    H, W = rgb.shape[:2]
+    comp = composition(img)
+    els = _elements(img, H, W, s)
+    fm, flabel, fnames = _focus_mask(img, focus, comp, els, H, W, s)
+    lab = rgb2oklab(rgb)
+    Lc, C = lab[..., 0], np.hypot(lab[..., 1], lab[..., 2])
+    sig = max(2.0, 0.015 * max(H, W))
+    maps = {"contrast": np.abs(Lc - cv2.GaussianBlur(Lc, (0, 0), sig)),
+            "sharpness": np.hypot(cv2.Sobel(Lc, cv2.CV_32F, 1, 0, ksize=3), cv2.Sobel(Lc, cv2.CV_32F, 0, 1, ksize=3)) / 4 * s,
+            # texture density: band-pass energy between ~0.2 % and 0.8 % of the image size
+            "detail": np.abs(cv2.GaussianBlur(Lc, (0, 0), max(0.7, 0.002 * max(H, W)))
+                             - cv2.GaussianBlur(Lc, (0, 0), max(2.0, 0.008 * max(H, W)))), "saturation": C}
+    stat = {"contrast": lambda v: np.percentile(v, 95), "sharpness": lambda v: np.percentile(v, 98),
+            "detail": np.mean, "saturation": lambda v: np.percentile(v, 90)}
+    rr = max(1, round(sig))
+    grow = lambda m: cv2.dilate(m.astype(np.uint8), _disk(rr)) > 0
+    shrink = lambda m: cv2.erode(m.astype(np.uint8), _disk(rr)) > 0
+    fd = grow(fm)
+    regions, used = [], fd.copy()                            # (name, mask incl. edges, interior mask)
+    for e in els:
+        if e["name"] in fnames:
+            continue
+        m = grow(e["a"] > 0.5) & ~fd
+        used |= m
+        if m.mean() > 0.015:
+            regions.append((f"'{e['name']}'", m, shrink(e["a"] > 0.5) & ~fd))
+    bg = ~used
+    if bg.mean() > 0.015:
+        regions.append(("background" if els else "the rest of the image", bg, shrink(bg)))
+    fcore = shrink(fm)
+    out = {"focus": flabel, "scores": {}, "issues": []}
+    if fd.sum() < 20 or not regions:
+        return out
+    for k, (label, floor, fix_other, fix_focus) in _HIER.items():
+        core = k == "detail"                                   # texture density: interiors only, edges excluded
+        fmask = fcore if core and fcore.sum() > 20 else fd
+        cands = [(float(stat[k](maps[k][mi if core and mi.sum() > 20 else m])), n) for n, m, mi in regions]
+        fv = float(stat[k](maps[k][fmask]))
+        best = max(cands, key=lambda t: t[0])
+        ratio = fv / max(best[0], 1e-6)
+        out["scores"][k] = {"focus": round(fv, 4), "best_other": best[1], "other": round(best[0], 4), "ratio": round(ratio, 2)}
+        if max(fv, best[0]) < floor or ratio >= 0.9:
+            continue
+        sev = "high" if k in ("contrast", "sharpness") and ratio < 0.6 else "mid" if k != "saturation" or ratio < 0.6 else "low"
+        out["issues"].append((sev, f"{best[1]} has {1 / max(ratio, 1e-3):.1f}x the {label} of the focus {flabel}: "
+                              f"there, {fix_other}; on the focus, {fix_focus}.", best[1]))
+    # squint test
+    k64 = 64 / max(H, W)
+    sw, sh = max(4, round(W * k64)), max(4, round(H * k64))
+    Ls = cv2.GaussianBlur(cv2.resize(Lc, (sw, sh), interpolation=cv2.INTER_AREA), (0, 0), 0.8)
+    fs = cv2.resize(fm.astype(np.uint8), (sw, sh), interpolation=cv2.INTER_NEAREST) > 0
+    ring = (cv2.dilate(fs.astype(np.uint8), _disk(2)) > 0) & ~fs
+    if fs.sum() >= 2 and ring.sum() >= 2:
+        dL = abs(float(np.median(Ls[fs]) - np.median(Ls[ring])))
+        out["squint"] = round(dL, 3)
+        if dL < 0.08:
+            out["issues"].append(("high" if dL < 0.04 else "mid", f"squint test: at 64 px the focus {flabel} merges with its "
+                                  f"surroundings (dL {dL:.2f}, want >= 0.1): make it clearly lighter or darker than what is around it.", None))
+    # light / shadow temperature
+    warm = lab[..., 2] + 0.3 * lab[..., 1]
+    lo, hi = np.percentile(Lc, 20), np.percentile(Lc, 80)
+    if hi - lo > 0.1:
+        wl, ws = float(warm[Lc >= hi].mean() * 100), float(warm[Lc <= lo].mean() * 100)
+        out["temperature"] = {"lights": round(wl, 1), "shadows": round(ws, 1)}
+        if abs(wl - ws) < 1.5 and C.mean() > 0.03:
+            out["issues"].append(("low", f"lights and shadows share one temperature (warmth {wl:.1f} vs {ws:.1f}): "
+                                  "cool the shadows (color_balance(shadows=(-.03, 0, .04))) or warm the lights, for depth.", None))
+    return out
+
+
+def critique(img, path=None, width=1024, max_align=6, focus=None) -> dict:
     """Self-critique: problems an eye would catch, each with a concrete fix, ranked high/mid/low.
     Image-level: quality flags, balance, focal point, horizon tilt. With a Canvas, per layer (use names):
     figure-ground contrast (OKLab + WCAG for text-like names), elements hidden by layers above,
@@ -975,13 +1110,8 @@ def critique(img, path=None, width=1024, max_align=6) -> dict:
     H, W = rgb.shape[:2]
     cw, ch = W / s, H / s
     canvas = hasattr(img, "layers")
-    els = []
-    if canvas:
-        for i, L in enumerate(img.layers):
-            b = L.bounds
-            if not L.visible or L.opacity < 0.3 or b is None or b[2] * b[3] > 0.9 * cw * ch:
-                continue                                       # hidden, empty or background
-            els.append({"i": i, "L": L, "b": b, "name": L.name or f"#{i}", "a": L.px[..., 3] * L.opacity})
+    # light / effect layers (screen, add, multiply...) count for hierarchy, not as objects
+    els = [e for e in _elements(img, H, W, s) if e["blend"] == "normal"] if canvas else []
     q = lambda e: f"'{e['name']}'"
 
     # ---- balance & focal
@@ -1020,15 +1150,18 @@ def critique(img, path=None, width=1024, max_align=6) -> dict:
         lab = rgb2oklab(rgb)
         r = max(2, round(0.012 * max(W, H)))
         # ---- hidden by layers above
-        cover = np.zeros((H, W), F32)
+        above = []                                             # (group, coverage) of layers above
         for e in reversed(els):
-            a = e["a"]
-            e["vis"] = float((a * (1 - cover)).sum() / max(a.sum(), 1e-6))
+            a, g = e["a"], e["name"].split("/")[0]
+            other = np.zeros((H, W), F32)
+            for g2, ac2 in above:
+                if g2 != g:                                    # covered by its own group (e.g. a rim) is fine
+                    other = 1 - (1 - other) * (1 - ac2)
+            e["vis"] = float((a * (1 - other)).sum() / max(a.sum(), 1e-6))
             if e["vis"] < 0.25 and a.sum() > 30:
                 add("mid", "hidden", f"{q(e)} is {100 - e['vis'] * 100:.0f}% covered by layers above it: restack it "
                     f"(L.front()) or move it.", e["b"], [e["name"]])
-            if e["L"].blend == "normal":
-                cover = 1 - (1 - cover) * (1 - np.clip(a, 0, 1))
+            above.append((g, np.clip(a, 0, 1)))
         # ---- figure-ground contrast
         for e in els:
             if e["vis"] < 0.5:
@@ -1078,7 +1211,7 @@ def critique(img, path=None, width=1024, max_align=6) -> dict:
                 if ia not in dts:
                     dts[ia] = cv2.distanceTransform((~ma).astype(np.uint8), cv2.DIST_L2, 5)
                 gap = max(0.0, float(dts[ia][mb].min()) - 1) / s     # empty pixels between the two
-                if gap <= tol_t:
+                if 1.5 / s <= gap <= tol_t:                    # 0-1 px = attached on purpose
                     yy, xx = np.unravel_index(int(np.argmin(np.where(mb, dts[ia], 1e9))), mb.shape)
                     add("mid", "tangent", f"{q(A)} and {q(B)} almost touch ({gap:.0f}px gap near {xx / s:.0f},{yy / s:.0f}): "
                         "overlap them clearly or open the gap.", (xx / s - 15, yy / s - 15, 30, 30), [A["name"], B["name"]])
@@ -1093,6 +1226,12 @@ def critique(img, path=None, width=1024, max_align=6) -> dict:
             for B in objs[ia + 1:]:
                 if "e" not in A and "e" not in B:
                     continue
+                if "e" in A and "e" in B:
+                    ga, gb = A["e"]["name"].split("/")[0], B["e"]["name"].split("/")[0]
+                    (ax0, ay0, aw0, ah0), (bx0, by0, bw0, bh0) = A["e"]["b"], B["e"]["b"]
+                    ox = max(0, min(ax0 + aw0, bx0 + bw0) - max(ax0, bx0)) * max(0, min(ay0 + ah0, by0 + bh0) - max(ay0, by0))
+                    if ga == gb or ox > 0.5 * min(aw0 * ah0, bw0 * bh0):
+                        continue                               # parts of one group / nested elements
                 for ax_ in ("x", "y"):
                     pairs = [(abs(va - B["f"][ax_][ka]), ka, va, ka, B["f"][ax_][ka]) for ka, va in A["f"][ax_].items() if ka in B["f"][ax_]]
                     if not pairs:
@@ -1107,6 +1246,12 @@ def critique(img, path=None, width=1024, max_align=6) -> dict:
         for d, msg, names, bs in sorted(found, key=lambda t: -t[0])[:max_align]:
             add("low", "align", msg, bs[0], names)
 
+    hi = hierarchy(img, focus)
+    boxes = {f"'{e['name']}'": (e["b"], e["name"]) for e in els}
+    for sev, msg, who in hi["issues"]:
+        b, n = boxes.get(who, (None, None))
+        add(sev, "hierarchy", msg, b, [n] if n else [])
+
     rank = {"high": 0, "mid": 1, "low": 2}
     issues.sort(key=lambda t: rank[t["sev"]])
     for n, t in enumerate(issues, 1):
@@ -1118,8 +1263,63 @@ def critique(img, path=None, width=1024, max_align=6) -> dict:
                 grouped.setdefault(t["box"], []).append(t)
         marks = [(*bx, ",".join(str(t["n"]) for t in ts), SEV_COL[ts[0]["sev"]]) for bx, ts in reversed(grouped.items())]
         grid_view(img, path, width=width, marks=marks)
-    return {"issues": issues, "metrics": m, "composition": {k: v for k, v in comp.items() if not k.startswith("_")}}
+    return {"issues": issues, "metrics": m, "composition": {k: v for k, v in comp.items() if not k.startswith("_")},
+            "hierarchy": {k: v for k, v in hi.items() if k != "issues"}}
+
+
+def critique_score(r) -> int:
+    """One number from a critique result (100 = nothing found): -15 per high, -5 per mid, -1 per low issue."""
+    return 100 - sum({"high": 15, "mid": 5, "low": 1}[t["sev"]] for t in r["issues"])
+
+
+def variant_sheet(items, path="variants.jpg", labels=None, focus=None, tile=420) -> list:
+    """Side-by-side critique of variants / thumbnails: each tile = image, 5-value study (squint view), score,
+    issue counts, hierarchy ratios and the worst issues; the best score gets a green frame.
+    items: Canvases / images; focus: one value or a list (per item). Returns [{label, score, issues, hierarchy}]."""
+    n = len(items)
+    labels = labels or [chr(65 + i) for i in range(n)]
+    focs = focus if isinstance(focus, list) else [focus] * n
+    res = []
+    for it, lb, fo in zip(items, labels, focs):
+        r = critique(it, focus=fo)
+        res.append({"label": lb, "score": critique_score(r), "issues": r["issues"], "hierarchy": r["hierarchy"], "_img": it})
+    best = max(range(n), key=lambda i: res[i]["score"])
+    cols = min(n, 4)
+    rows = math.ceil(n / cols)
+    ih, th = round(tile * 0.72), 190
+    pad = 12
+    sheet = Image.new("RGB", (cols * (tile + pad) + pad, rows * (ih + th + pad) + pad), BG)
+    d = ImageDraw.Draw(sheet)
+    for i, r in enumerate(res):
+        x0, y0 = pad + (i % cols) * (tile + pad), pad + (i // cols) * (ih + th + pad)
+        rgb, _ = _src(r.pop("_img"))
+        im, _ = _fit(rgb, tile, ih)
+        sheet.paste(im, (x0 + (tile - im.width) // 2, y0))
+        if i == best and n > 1:
+            d.rectangle([x0 - 4, y0 - 4, x0 + tile + 3, y0 + ih + th - 6], outline=OK, width=3)
+        vs, _ = _fit(_value_study(rgb2oklab(rgb)[..., 0]), round(tile * 0.34), th - 50)
+        sheet.paste(vs, (x0, y0 + ih + 8))
+        tx, ty = x0 + vs.width + 10, y0 + ih + 6
+        c = {k: sum(t["sev"] == k for t in r["issues"]) for k in ("high", "mid", "low")}
+        ty = _text(d, (tx, ty), f"{r['label']}   score {r['score']}", 17, "bold", OK if i == best else FG)
+        ty = _text(d, (tx, ty), f"{c['high']} high  {c['mid']} mid  {c['low']} low", 13, "mono", DIM)
+        sc = r["hierarchy"].get("scores", {})
+        if sc:
+            ratios = " ".join(f"{'sat' if k == 'saturation' else k[0]}{v['ratio']:.1f}" for k, v in sc.items())
+            ty = _text(d, (tx, ty), f"focus/rest {ratios}", 13, "mono",
+                       RED if min(v["ratio"] for v in sc.values()) < 0.9 else DIM)
+        if "squint" in r["hierarchy"]:
+            sq = r["hierarchy"]["squint"]
+            ty = _text(d, (tx, ty), f"squint dL {sq:.2f}", 13, "mono",
+                       RED if sq < 0.08 else DIM)
+        for t in [t for t in r["issues"] if t["kind"] != "quality"][:3]:
+            msg = f"{t['n']}. {t['kind']}: {t['msg']}"
+            msg = msg if len(msg) < 52 else msg[:50] + ".."
+            ty = _text(d, (tx, ty), msg, 12, "sans", SEV_COL[t["sev"]])
+    _save(sheet, path)
+    return res
 
 
 __all__ = ["metrics", "contact_sheet", "compare", "guides", "composition", "saliency",
-           "analyze_reference", "match_palette", "transfer_tone", "grid_view", "layer_boxes", "critique"]
+           "analyze_reference", "match_palette", "transfer_tone", "grid_view", "layer_boxes", "critique", "hierarchy",
+           "critique_score", "variant_sheet"]

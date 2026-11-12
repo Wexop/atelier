@@ -615,8 +615,12 @@ class Canvas:
         return self._flat.copy()
 
     def merge(self) -> Layer:
-        """Collapse all layers into one normal base layer (made current)."""
+        """Collapse all layers into one normal base layer (made current). Named layers leave an alpha
+        snapshot in c.merged [(name, uint8 H x W, blend)] so `critique` can still judge them after c.apply()."""
         img = self.flatten()
+        snap = [(L.name, to_u8(np.clip(L.px[..., 3] * L.opacity, 0, 1), False), L.blend)
+                for L in self.layers if L.name and L.name != "base" and L.visible and L.opacity > 0]
+        self.__dict__.setdefault("merged", []).extend(snap)
         self.layers = []
         L = self.layer(name="base")
         L.px = premul(img)

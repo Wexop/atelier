@@ -15,6 +15,6 @@ from .figure import *  # noqa: F401,F403
 from .anime import *  # noqa: F401,F403
 from .inspect import *  # noqa: F401,F403
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 _MODULES = ("core", "field", "vector", "fx", "brush", "sdf", "pt", "stylize", "terrain", "nature", "figure", "anime", "inspect")
 __all__ = list(dict.fromkeys(n for m in _MODULES for n in getattr(_sys.modules[f"{__name__}.{m}"], "__all__", [])))
