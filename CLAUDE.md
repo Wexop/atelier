@@ -13,6 +13,8 @@ Applies to every contributor, human or AI (Claude Code loads this file automatic
   so `pip install -U git+https://github.com/Wexop/atelier` picks it up.
   Semver: patch = fix, minor = new feature or API addition, major = breaking change.
 - Docs-only or example-only changes do not need a bump.
+- Every bump gets an annotated tag `vX.Y.Z` on the bump commit, pushed with it:
+  `git tag -a vX.Y.Z -m "atelier X.Y.Z" && git push origin main vX.Y.Z`.
 
 ## SKILL.md
 - `SKILL.md` is the cheat sheet an AI loads to use the tool: keep it **≤ 200 lines**, dense, accurate.
