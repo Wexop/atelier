@@ -994,7 +994,14 @@ def _floating(els, H, W, s, cw, ch, Lm):
         cols = np.flatnonzero(m.any(0))
         if len(cols) < 6 or len(cols) > 0.8 * W:
             continue
+        if m.sum() / len(cols) < 4 * s:
+            continue                                               # lines / strokes (foam, ripples) do not rest
         bot = H - 1 - np.argmax(m[::-1, cols], 0)                 # lowest pixel per column
+        cover = np.zeros(len(cols), F32)                           # base hidden by layers in front (a cliff, a hull)
+        for o in els[els.index(E) + 1:]:
+            cover = np.maximum(cover, o["a"][np.clip(bot, 0, H - 1), cols])
+        if (cover > 0.5).mean() > 0.3:
+            continue
         base = bot >= bot.max() - max(1, round(s))                  # the flat base (round bottoms, eaves lift off)
         if base.sum() < max(6, 0.25 * len(cols)):
             continue
@@ -1327,8 +1334,8 @@ def critique(img, path=None, width=1024, max_align=6, focus=None) -> dict:
             above.append((g, np.clip(a, 0, 1)))
         # ---- figure-ground contrast
         for e in els:
-            if e["vis"] < 0.5:
-                continue
+            if e["vis"] < 0.5 or any(t in e["name"].lower() for t in ("reflection", "shadow")):
+                continue                                       # reflections / shadows are meant to sit low-contrast
             inside = (e["a"] > 0.5).astype(np.uint8)
             if inside.sum() < 30:
                 continue
@@ -1442,7 +1449,9 @@ def critique(img, path=None, width=1024, max_align=6, focus=None) -> dict:
                         continue
                     if float(np.median(Lm[core])) > 0.8:
                         continue                                       # a light source has its own colour
-                    ec = np.median(lab[core][:, 1:], 0)
+                    lc = Lm[core]
+                    sh = lc <= np.median(lc)                           # shadow half: where ambient light shows
+                    ec = np.median(lab[core][sh][:, 1:], 0)
                     proj = float(ec @ amb) / na
                     if proj < 0.2 * na and float(np.hypot(*(ec - amb))) > 0.04:
                         add("mid", "ambient", f"'{e['name']}' ignores the scene light: its colour cast ({ec[0]:+.2f},{ec[1]:+.2f}) "

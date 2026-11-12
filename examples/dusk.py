@@ -1,4 +1,4 @@
-# Flat vector dusk: banded sky, layered hills with rim light, lone tree, lake reflection, fireflies and petals.
+# Flat vector dusk: low lit clouds, layered hills with rim light, lone tree, lake reflection, fireflies and petals.
 import numpy as np
 from atelier import *
 
@@ -7,20 +7,22 @@ HZ = 1180                                     # shoreline (px)
 SUN = (300, 880)
 c = Canvas(W, H)
 
-# sky: purple -> peach, with flat horizontal bands
-c.fill(gradient([(0, "#2a2350"), (0.18, "#4b3f86"), (0.36, "#7a5fa8"), (0.48, "#e0795f"),
+# sky: purple -> peach, a few low stratus clouds lit from below by the sun
+c.layer(name="sky").fill(gradient([(0, "#2a2350"), (0.18, "#4b3f86"), (0.36, "#7a5fa8"), (0.48, "#e0795f"),
                  (0.56, "#ffb070"), (0.62, "#ffd9a0"), (0.74, "#c9a6d6")]))
-bands = c.layer(blend="soft_light", opacity=0.6)
 rng = np.random.default_rng(SEED)
-for y in np.cumsum(rng.uniform(40, 110, 14)):
-    t = rng.uniform(0.3, 1)
-    bands.rect(-20, y, W + 40, rng.uniform(14, 40), r=20,
-               fill="#ffffff" if rng.random() > 0.45 else "#20184a", opacity=0.35 * t)
+for i, (x, y, w, h) in enumerate([(-40, 330, 420, 34), (420, 250, 520, 28), (520, 560, 300, 18)]):
+    lobes = union(rect(x + w * .05, y - h * .5, w * .9, h * .5 + 1, r=h * .25),
+                  *[ellipse(x + w * f, y - h * .5, w * .12, h * k) for f, k in [(.25, .7), (.45, 1.0), (.66, .8), (.82, .5)]])
+    lobes = lobes & rect(x - w, y - 3 * h, 3 * w, 3 * h)
+    c.layer(name=f"clouds/{i}")
+    c.draw(lobes, fill=gradient([(0, "#4b3f86"), (.6, "#6a56a0"), (1, "#c98a9c")]).within(rect(x, y - 1.6 * h, w, 1.6 * h)))
+    c.draw(lobes - lobes.move(0, -max(2.5, h * .12)), fill="#ffc29a", opacity=.9)        # underside lit by the low sun
 c.layer(blend="screen").fill("#ffd59a", mask=disc(SUN[0] / W, SUN[1] / H, 0.08, soft=0.35))
 c.layer(blend="screen", opacity=0.5).fill("#ff9d6e", mask=disc(SUN[0] / W, SUN[1] / H, 0.25, soft=0.8))
 
 # distant mountains, hazy lavender
-far = c.layer()
+far = c.layer(name="far")
 far.path("M -20 980 C 100 960 200 1000 300 1010 C 420 930 500 900 560 880 C 620 860 660 900 720 870 C 790 835 860 850 920 830 L 920 1200 L -20 1200 Z",
          fill="#8f8fcf")
 far.path("M -20 1080 C 150 1050 280 1090 380 1060 C 480 1010 560 990 640 975 C 720 960 820 985 920 960 L 920 1200 L -20 1200 Z", fill="#a3a8de")
@@ -32,7 +34,7 @@ def blob_tree(L, x, y, s, col):
                  ellipse(x + s * 0.32, y - s * 0.62, s * 0.26, s * 0.15), ellipse(x + s * 0.05, y - s * 0.86, s * 0.25, s * 0.15)),
            fill=col)
 
-trees = c.layer()
+trees = c.layer(name="trees")
 for x, y, s in [(520, 1100, 150), (640, 1090, 120), (790, 1080, 190), (880, 1090, 130)]:
     blob_tree(trees, x, y, s, "#7d82c4")
 
@@ -40,15 +42,15 @@ for x, y, s in [(520, 1100, 150), (640, 1090, 120), (790, 1080, 190), (880, 1090
 hills = [("M -20 1000 C 120 940 280 960 420 1060 C 520 1120 600 1140 700 1150 L 700 1220 L -20 1220 Z", "#3b3a78"),
          ("M 330 1150 C 450 1090 600 1090 760 1120 C 840 1135 900 1140 920 1140 L 920 1220 L 330 1220 Z", "#4d4f92"),
          ("M -20 1080 C 160 1060 300 1120 380 1180 L -20 1200 Z", "#2a2a5e")]
-for d, col in hills:
-    L = c.layer()
+for i, (d, col) in enumerate(hills):
+    L = c.layer(name=f"hill/{i}")
     s = svg(d)
     L.draw(s, fill=col)
     L.draw(s.outline(4), fill="#ffb87a", opacity=0.55, feather=1.5)
-c.layer().rect(0, HZ - 14, W, 14, fill="#2a2a5e")
+c.layer(name="shore").rect(0, HZ - 14, W, 14, fill="#2a2a5e")
 
 # lone tree: dark trunk + layered canopy, rim-lit on the sun side
-tree = c.layer()
+tree = c.layer(name="tree")
 trunk = svg("M 80 1080 C 95 960 70 860 120 760 C 140 720 170 690 210 660 L 225 675 C 180 720 150 780 145 860 "
             "C 140 950 150 1020 150 1080 Z")
 branch = svg("M 150 780 C 220 720 300 700 380 690 L 382 702 C 300 715 230 740 160 800 Z") | \
@@ -59,6 +61,7 @@ canopy = union(ellipse(170, 610, 190, 70), ellipse(70, 560, 120, 55), ellipse(26
 tree.draw(canopy, fill="#1f1d44")
 tree.draw(canopy & canopy.move(-18, -14), fill="#2b2958")
 tree.draw(canopy.outline(3), fill="#f6b27c", opacity=0.5)
+tree.below("hill/2")                                  # the trunk's foot sinks behind the front hill
 
 # lake: mirrored sky/land, darkened, with flat ripple strokes
 img = c.flatten()
@@ -68,11 +71,11 @@ src = img[hz - h:hz][::-1].copy()
 fade = np.linspace(0.85, 0.45, h)[:, None, None]
 src[..., :3] = src[..., :3] * fade + np.array([0.12, 0.12, 0.3]) * (1 - fade)
 src[..., 3] = 1
-lake = c.layer()
+lake = c.layer(name="lake")
 buf = np.zeros_like(img)
 buf[hz:] = src
 lake.rgba = buf
-rip = c.layer(opacity=0.8)
+rip = c.layer(name="ripples", opacity=0.8)
 h = H - HZ
 for k in range(45):
     y = HZ + 8 + (k / 45) ** 1.6 * h
@@ -83,10 +86,10 @@ for k in range(45):
 c.layer().rect(0, HZ - 2, W, 4, fill="#ffc38a", opacity=0.6)
 
 # fireflies and falling petals
-ff = c.layer()
-ff.scatter("dot", 120, region=band(0.05, 0.95), size=(5, 11), color=["#fff1b0", "#ffd36e"], seed=SEED + 1)
+ff = c.layer(name="fireflies")                       # low over the grass and the water, not up in the sky
+ff.scatter("dot", 45, region=band(0.56, 0.8), size=(5, 10), color=["#fff1b0", "#ffd36e"], seed=SEED + 1)
 ff.apply(glow(18, 1.6, "#ffd36e"))
-c.layer().scatter("petal", 70, region=band(0.0, 0.9), size=(14, 24), color=["#f5b8c8", "#ffd0dc", "#e89ab8"],
+c.layer(name="petals").scatter("petal", 22, region=zone(0, .3, .7, .78), size=(12, 20), color=["#f5b8c8", "#ffd0dc", "#e89ab8"],
                   rot=(0, 360), seed=SEED + 2)
 
 c.layer().sparkles(60, region=zone(0, HZ / H, 1, 1) * disc(SUN[0] / W, 0.85, 0.25, soft=0.6), size=(6, 18), seed=SEED + 5)

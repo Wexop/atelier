@@ -80,9 +80,10 @@ or re-upload the zip on Claude.ai.
 from atelier import *
 
 c = Canvas(1600, 1000)
-c.fill(gradient([(0, "#0b1026"), (0.6, "#3b2a5a"), (1, "#f4a259")]))
-c.layer(blend="screen").fill("white", mask=stars(70, seed=3) * top(0.6, soft=0.2))
-c.layer().fill_below(ridged(2.2, seed=1).ridge_line(y=0.7, amp=0.15), fbm(6).ramp(["#1b1b2f", "#2e2e4d"]))
+c.fill(gradient([(0, "#0b1026"), (0.45, "#3b2a5a"), (0.68, "#f4a259")]))
+c.layer(blend="screen").fill("white", mask=stars(70, seed=3) * top(0.5, soft=0.2))
+c.circle(1180, 250, 44, fill="#fff4d6")
+c.layer().fill_below(ridged(2.2, seed=1).ridge_line(y=0.74, amp=0.15), fbm(6).ramp(["#0c0c1a", "#1f1c34"]))
 c.apply(bloom(0.8, 12), grain(0.03), vignette(0.3))
 c.save("night.png")
 ```
