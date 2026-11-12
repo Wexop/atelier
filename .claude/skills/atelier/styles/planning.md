@@ -28,6 +28,8 @@ FOCUS = "keeper"      # layer or group name (or x, y, w, h): `atelier critique` 
 | light | key light, shadow shapes, cast shadows (`L.duplicate("x/shadow")`) | values still read in the value study |
 | colour | palette, temperature split (warm light / cool shadow or reverse) | hierarchy saturation ratio >= 1 |
 | texture | texture and detail, **mostly on the focus**; background simpler | detail and sharpness ratios >= 1 |
+| depth | every element past the primitive: second tone, rim facing the light, broken silhouette (see below) | no "simple" issue |
+| contact | subject anchored: `c.reflect(...)` on water, cast/contact shadow on ground, ripples, wake, dust | no "grounding" issue |
 | finish | edges (lose some away from the focus), atmosphere, grading | final `critique` + `inspect` at full res |
 Use `--grid --boxes` while placing; fix by name (`c["sun"].move_to(...)`), never by guessing new numbers blind.
 
@@ -38,7 +40,14 @@ Use `--grid --boxes` while placing; fix by name (`c["sun"].move_to(...)`), never
 - Darkest dark next to the lightest light only at the focus. Keep 3-5 value groups; mid-tones carry most of the area.
 - Avoid tangents and near-misses: overlap clearly or separate clearly; lead lines point at the focus, not out of frame.
 
-## 5. Variants instead of guessing
+## 5. Rendering depth checklist (one medium for everything)
+- Choose the medium first (flat vector / painted / photoreal 3D) and draw **every** element in it. Mixing a rendered sky or
+  sea with flat shapes looks pasted on: in photoreal, model the objects in 3D under the same sun; in flat, keep it all flat.
+- Flat does not mean bare: sun = disc with inner gradient + stepped halo rings; clouds = lobed shapes, cool body, warm lit
+  underside, rim toward the light; water = tonal bands + perspective-spaced dashes + glitter path + sliced reflections
+  (`c.reflect(..., bands=4)`); land = two facets + rim; subject = silhouette with real parts + rim + contact.
+
+## 6. Variants instead of guessing
 Unsure between options (sun position, palette, crop)? Make them explicit: copy the scene or use `SEED`, then
 `atelier sheet a.py b.py` or `atelier sheet scene.py --seeds 1,2,3,4` and keep the best score that also looks best.
 

@@ -17,7 +17,9 @@ Check: `atelier palette` · `atelier brushes` · `atelier fx` (signatures).
 3. `atelier inspect scene.py` → `scene_sheet.jpg`: view, 5-value study + thirds/focal, clip map, histogram, palette, 4 auto zooms
    (aliasing, banding, noise, highlight) labelled `--crop x,y,w,h`, metrics + red flags. **Read it.** Zoom: `atelier render scene.py --crop x,y,w,h`.
    `atelier critique scene.py` → ranked problems with fixes (contrast, balance, near-miss alignment, tangents, edge crowding,
-   hidden layers, **hierarchy**: does `FOCUS = "layer"` (or `--focus`) win on contrast, sharpness, detail, saturation, squint test?)
+   hidden layers, **simple** (bare flat primitives = placeholder look), **style** mix (vector-flat on a rendered ground),
+   **grounding** (focus floats: no shadow / reflection / ripples), **hierarchy**: does `FOCUS = "layer"` (or `--focus`) win on
+   contrast, sharpness, detail, saturation, squint test?)
    + `scene_critique.jpg` with numbered boxes. One element per named layer; names survive `c.apply()`.
    Variants: `atelier sheet a.py b.py` / `atelier sheet scene.py --seeds 1,2,3` → tiles + value studies + scores.
 4. ≥3 look-and-fix rounds (`atelier compare old.png new.png` for A/B), then `atelier render scene.py` (final; `--scale 2`, `--seed N` → `SEED`).
@@ -35,6 +37,7 @@ L = c.layer(blend="normal", opacity=1, mask=None, name=None)   # new layer, BECO
 Name layers by role ("sun", "hero/body", "hero/shadow") and edit by name: c["sun"] · c.use("sun") · "sun" in c · c.group("hero") -> [layers]
 L.bounds -> (x,y,w,h) · L.move(dx,dy) · L.move_to(x, y, anchor="center"|"bottom"|"topleft"..) · L.transform(dx,dy,scale,rot,flip="x"|"y",center)
 L.front() .back() .above("x") .below("x") · L.hide() .show() · L.duplicate("hero/shadow") · L.remove()   (group: for L in c.group("hero"): L.move(40, 0))
+c.reflect("hero", y_waterline, ripple=5, wave=40, dim=.6, fade=1, breakup=.35, bands=0 (px: flat sliced strips), seed) -> "hero/reflection" below it
 blends: normal multiply screen overlay soft_light hard_light add subtract color_dodge color_burn darken lighten difference hue saturation color luminosity
 c.fill(src, mask=None) · c.erase(mask) · c.place(img|path, x=None, y=None, scale=None(cover), rot=0, fit="cover"|"contain", blend, opacity) -> layer
 c.apply(*fx, mask=None)   # MERGES all layers, then effects (final grading);  L.apply(*fx, mask=None) = one layer
@@ -169,6 +172,10 @@ Each gives recipe, rules, pitfalls and an example script. Several can be mixed (
 - `new-style.md` — **no guide fits**: study the look, map it to primitives, paint, then save a new `styles/<name>.md`
 
 ## Pitfalls
+- **One medium per picture.** Photoreal sky/sea (`c.sea`, `c.landscape`) + vector shapes on top = pasted-on cut-outs: either
+  render the objects in 3D under the same sun (`scene_sky` + same camera) or stay fully flat/painted. `critique` flags "style".
+- Every element needs more than a primitive in one colour: sun = disc + gradient + halo rings, cloud = lobed silhouette + lit
+  underside + rim, water = bands + glitter + reflections, subject = rim light + contact (reflection / shadow / ripples).
 - `c.layer()` changes the current target: later `c.text/...` go to that layer (bad if it is `multiply`). Call `c.layer()` or `c.use(L)`.
 - `c.apply()` merges all layers. Use `L.apply()` to keep layers.
 - `shade(strength)` depends on field frequency: ≈1 for big forms, ≈.05 for fine textures (fabric).

@@ -193,3 +193,27 @@ def test_variant_sheet_scores(tmp_path):
     res = variant_sheet([_hier_scene(True), _hier_scene(False)], tmp_path / "v.jpg", labels=["busy", "calm"], focus="hero")
     assert [r["label"] for r in res] == ["busy", "calm"] and res[1]["score"] > res[0]["score"]
     assert (tmp_path / "v.jpg").exists()
+
+
+def test_critique_flags_placeholders_and_floating_subject():
+    from atelier import critique, svg
+    c = Canvas(400, 300)
+    c.layer(name="sky").fill("#5a4a80")
+    c.layer(name="sea").rect(0, 180, 400, 120, fill="#2a2440")
+    c.layer(name="sun").circle(120, 120, 40, fill="#ffe0a0")             # bare flat disc
+    c.layer(name="island").draw(svg("M 20 182 C 60 160 110 160 150 182 Z"), fill="#30283f")
+    c.layer(name="hero").draw(svg("M 250 230 L 270 170 L 290 230 Z"), fill="#100c18")
+    kinds = lambda r: {(t["kind"], tuple(t["layers"])) for t in r["issues"]}
+    r = critique(c, focus="hero")
+    assert ("simple", ("sun",)) in kinds(r)
+    assert ("grounding", ("hero",)) in kinds(r)
+    c.reflect("hero", 230)                                                # water contact anchors it
+    assert ("grounding", ("hero",)) not in kinds(critique(c, focus="hero"))
+
+
+def test_critique_flags_style_mix():
+    from atelier import critique, fbm
+    c = Canvas(400, 300)
+    c.layer(name="ground").fill(fbm(60, seed=1).ramp(["#203040", "#b0c0d0"]))   # textured, full frame
+    c.layer(name="house").rect(150, 100, 100, 120, fill="#804030")
+    assert any(t["kind"] == "style" for t in critique(c)["issues"])

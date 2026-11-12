@@ -977,6 +977,31 @@ def _elements(img, H, W, s):
     return out
 
 
+def _primitive_share(mask, min_area):
+    """(share of a mask's area made of bare-primitive parts (ellipse, rect, capsule), number of parts)."""
+    n, lab_, st, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), 8)
+    tot = prim = parts = 0
+    for i in range(1, n):
+        area = st[i, cv2.CC_STAT_AREA]
+        if area < min_area:
+            continue
+        tot += area
+        parts += 1
+        cs, _ = cv2.findContours((lab_ == i).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        c_ = max(cs, key=cv2.contourArea)
+        hull = cv2.contourArea(cv2.convexHull(c_))
+        if hull <= 0 or area / hull < 0.97:
+            continue                                        # concave: lobes, notches -> a real silhouette
+        (_, _), (rw, rh), _ = cv2.minAreaRect(c_)
+        rect_fill = area / max(rw * rh, 1)
+        ell_fill = area / max(math.pi * rw * rh / 4, 1)
+        cap = min(rw, rh) / max(rw, rh, 1)
+        capsule = 1 - (1 - math.pi / 4) * cap               # fill of a stadium in its box
+        if rect_fill > 0.93 or abs(ell_fill - 1) < 0.05 or abs(rect_fill - capsule) < 0.04:
+            prim += area
+    return (prim / tot if tot else 0.0), parts
+
+
 def _bbox_canvas(a, s, thresh=0.02):
     m = a > thresh
     rows = np.flatnonzero(m.any(1))
@@ -1196,6 +1221,70 @@ def critique(img, path=None, width=1024, max_align=6, focus=None) -> dict:
                 if 1.5 / s < gap < tol_e:
                     add("mid", "edge", f"{q(e)} is {gap:.0f}px from the {side} edge (tension): bleed it off the "
                         f"edge or give it >= {2 * tol_e:.0f}px.", e["b"], [e["name"]])
+        # ---- rendering depth: bare primitives / one flat colour (placeholder look)
+        Lm = cv2.medianBlur(to_u8(np.clip(lab[..., 0], 0, 1), False), 5).astype(F32) / 255   # grain removed
+        fine = np.abs(Lm - cv2.GaussianBlur(Lm, (0, 0), max(1.0, 1.2 * s)))
+        gb_big = lambda a: (lambda b: b is None or b[2] * b[3] > 0.3 * cw * ch)(_bbox_canvas(a, s))   # backdrops
+        groups = {}
+        for e in els:
+            groups.setdefault(e["name"].split("/")[0], []).append(e)
+        for g, es in (groups.items() if len(groups) >= 4 else ()):   # pictorial scenes only, not a logo / layout
+            if any(t in g.lower() for t in _TEXTY) or g.startswith("#"):
+                continue
+            ga = np.clip(sum(e["a"] for e in es), 0, 1)
+            if (ga > 0.5).mean() < 0.002 or gb_big(ga):
+                continue
+            gb = _bbox_canvas(ga, s)
+            core = cv2.erode((ga > 0.5).astype(np.uint8), _disk(max(1, round(1.5 * s)))) > 0
+            flat = core.sum() > 30 and float(np.std(lab[core][:, 0])) < 0.012 \
+                and float(np.std(np.hypot(lab[core][:, 1], lab[core][:, 2]))) < 0.01
+            prim, parts = _primitive_share(ga > 0.5, max(20, int(0.0005 * H * W)))
+            if flat and prim > 0.6:
+                add("mid", "simple", f"'{g}' is a bare primitive in one flat colour (reads as a placeholder): give it a "
+                    "real silhouette (lobes, notches, overlapping parts) and a second tone (lit side, shadow facet, "
+                    "gradient inside the shape, halo).", gb, [e["name"] for e in es])
+            elif prim > 0.8 and len(es) == 1 and parts <= 8:     # many small parts = a pattern (waves, stars)
+                add("mid" if gb[2] * gb[3] > 0.02 * cw * ch else "low", "simple", f"'{g}' is built only from bare primitives (ellipse / rect / capsule): break the "
+                    "silhouette so it reads as the thing, not a diagram.", gb, [e["name"] for e in es])
+        # ---- style mix: flat vector elements on a textured (photo / painted) ground, or the reverse
+        used = np.zeros((H, W), bool)
+        for e in els:
+            used |= e["a"] > 0.05
+        bgc = cv2.erode((~used).astype(np.uint8), _disk(max(1, round(2 * s)))) > 0
+        if bgc.mean() > 0.1:
+            tb = float(np.mean(fine[bgc]))
+            for g, es in groups.items():
+                ga = np.clip(sum(e["a"] for e in es), 0, 1)
+                core = cv2.erode((ga > 0.5).astype(np.uint8), _disk(max(1, round(2 * s)))) > 0
+                if core.mean() < 0.001:
+                    continue
+                te = float(np.mean(fine[core]))
+                if tb > 0.004 and te < 0.55 * tb and not gb_big(ga):
+                    add("mid", "style", f"style mix: '{g}' is smooth vector-flat (texture {te:.3f}) on a textured / "
+                        f"rendered ground ({tb:.3f}), so it looks pasted on: render it in the same medium (3D, same "
+                        "brush or filter, same texture) or simplify the ground to match.", _bbox_canvas(ga, s), [e["name"] for e in es])
+        # ---- grounding: does anything anchor the focus where it meets the ground / water?
+        if isinstance(focus, str):
+            fes = [e for e in els if e["name"] == focus or e["name"].startswith(focus + "/")]
+            if fes:
+                fa = np.clip(sum(e["a"] for e in fes), 0, 1)
+                fx0, fy0, fw0, fh0 = _bbox_canvas(fa, s)
+                bot = fy0 + fh0
+                anchor_names = ("shadow", "reflection", "contact", "ripple", "splash", "wake", "foam")
+                ok = bot > ch - 0.02 * ch or any(any(t in e["name"].lower() for t in anchor_names) for e in fes)
+                if not ok:
+                    for e in _elements(img, H, W, s):
+                        if e["name"] in [f["name"] for f in fes] or e["b"][2] * e["b"][3] > 0.25 * cw * ch:
+                            continue
+                        ex, ey, ew, eh = e["b"]
+                        ovx = max(0, min(ex + ew, fx0 + fw0) - max(ex, fx0))
+                        if ovx > 0.3 * fw0 and ey < bot + 0.04 * ch and ey + eh > bot - 0.01 * ch:
+                            ok = True
+                            break
+                if not ok:
+                    add("mid", "grounding", f"nothing anchors '{focus}' where it meets the ground / water (no contact "
+                        "shadow, reflection, ripples): it floats like a sticker. Add c.reflect(name, waterline) on water, "
+                        "a cast / contact shadow (L.duplicate('x/shadow')) on ground.", (fx0, bot - 10, fw0, 20), [focus])
         # ---- near-tangent elements
         tol_t = max(3 / s, 0.006 * max(cw, ch))
         small = [e for e in els if e["b"][2] * e["b"][3] < 0.6 * cw * ch]

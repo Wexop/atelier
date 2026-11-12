@@ -630,6 +630,59 @@ class Canvas:
         """Merge everything and apply effects to the whole image (final grading)."""
         return self.merge().apply(*fx)
 
+    def reflect(self, src, y, ripple=5.0, wave=40.0, fade=1.0, dim=0.6, tint=None, breakup=0.35, bands=0,
+                opacity=1.0, seed=0, name=None) -> Layer:
+        """Water reflection of layers `src` (name, group prefix or list) mirrored about the waterline y
+        (canvas px). Rows wobble sideways by up to `ripple` px (growing toward the viewer, `wave` = vertical
+        period px), colour is dimmed toward `tint` (default: the image under the waterline), fades out
+        after fade x the source height, `breakup` cuts it into horizontal streaks, bands=px slices it into
+        hard-edged strips with one shift each (flat / vector style). New layer placed just
+        below the lowest source layer (name default: '<src>/reflection'). Anchors objects in water."""
+        Ls = []
+        for s_ in ([src] if isinstance(src, (str, Layer)) else src):
+            Ls += (self.group(s_) or [self[s_]]) if isinstance(s_, str) else [s_]
+        H, W, s = self.H, self.W, self.s
+        acc = np.zeros((H, W, 4), F32)
+        for L in Ls:
+            _composite(acc, L.px, L.blend, L.opacity, L._mask)
+        wl = int(round(y * s))
+        rows = np.nonzero(acc[:wl, :, 3].max(1) > 0.01)[0]
+        out = np.zeros_like(acc)
+        if wl < H and len(rows):
+            ext = max(1, wl - rows[0])
+            d = np.arange(H - wl, dtype=F32)
+            t = np.clip(d / max(1, H - wl), 0, 1)
+            rng = np.random.default_rng(seed)
+            k = max(3, int(wave * s))
+            off = cv2.GaussianBlur(rng.normal(0, 1, (H - wl + 4 * k, 1)).astype(F32), (1, 0), k / 3)[2 * k:2 * k + H - wl, 0]
+            off = off / (np.abs(off).max() + 1e-6)
+            if bands:                                # flat style: constant shift per horizontal strip
+                bi = np.floor(d / np.maximum(1.0, bands * s * (1 + 2 * t))).astype(int)
+                off = rng.uniform(-1, 1, bi.max() + 1)[bi].astype(F32)
+            xs = np.arange(W, dtype=F32)
+            ph = rng.uniform(0, 6.283)
+            wob = off[:, None] + (0 if bands else 0.35) * np.sin(xs[None] / (wave * s * 0.7) + d[:, None] * 0.35 / s + ph)
+            mx = xs[None] + ripple * s * (0.25 + t[:, None]) * wob
+            my = np.broadcast_to((wl - 1 - d)[:, None], mx.shape).astype(F32)
+            ref = cv2.remap(acc, mx.astype(F32), my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+            a = np.clip(1 - d / (fade * ext), 0, 1) ** 1.5
+            if breakup > 0 and bands:
+                a = a * np.where(rng.uniform(0, 1, bi.max() + 1)[bi] < breakup * .6, 0.0, 1.0).astype(F32)
+            elif breakup > 0:
+                st = cv2.GaussianBlur(rng.uniform(0, 1, (H - wl + 8, 1)).astype(F32), (1, 0), max(1, s))[4:4 + H - wl, 0]
+                a = a * np.clip(1 - breakup + breakup * 2 * (st - st.min()) / (np.ptp(st) + 1e-6), 0, 1)
+            ref *= a[:, None, None]
+            if tint is None:
+                under = self.flatten()[wl:, :, :3]
+            else:
+                under = np.broadcast_to(resolve(tint, H - wl, W, None, s)[..., :3], (H - wl, W, 3))
+            ref[..., :3] = ref[..., :3] * dim + under * (1 - dim) * ref[..., 3:]
+            out[wl:] = ref
+        L = Layer(self, "normal", opacity, None, name or f"{Ls[0].name.split('/')[0] if Ls[0].name else 'layer'}/reflection")
+        L.px = out
+        self.layers.insert(min(self.layers.index(l) for l in Ls), L)
+        return L
+
     def place(self, src, x=None, y=None, scale=None, rot=0.0, fit="cover",
               blend="normal", opacity=1.0, layer=None) -> Layer:
         """Import an image (path/array/PIL) as a new layer. (x, y) = centre in canvas px

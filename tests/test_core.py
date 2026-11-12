@@ -149,3 +149,16 @@ def test_named_layers_transform_and_stack():
     flip.transform(flip="x", center=(100, 50))
     assert flip.bounds == (170, 10, 20, 10)
     assert np.isfinite(c.flatten()).all()
+
+
+def test_reflect_mirrors_below_waterline():
+    c = Canvas(200, 200)
+    c.layer(name="sea").fill("#204060")
+    c.layer(name="boat/hull").rect(80, 80, 40, 20, fill="#ff0000")
+    L = c.reflect("boat", 100, ripple=0, breakup=0, dim=1, seed=0)
+    assert L.name == "boat/reflection" and c.layers.index(L) == c.layers.index(c["boat/hull"]) - 1
+    a = L.alpha
+    assert a[:int(100 * c.s) - 1].max() == 0                              # nothing above the waterline
+    assert a[int(105 * c.s), int(100 * c.s)] > 0.5                       # mirrored just below it
+    Lb = c.reflect("boat", 100, bands=4, seed=1, name="flat")
+    assert Lb.alpha.max() > 0
