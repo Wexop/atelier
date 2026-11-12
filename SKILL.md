@@ -6,7 +6,6 @@ description: Paint images (PNG/JPG/WebP) yourself with code instead of calling a
 
 Install (Python ≥ 3.11): `pip install git+https://github.com/Wexop/atelier` (update: `pip install -U git+...`)
 Check: `atelier palette` · `atelier brushes` · `atelier fx` (signatures).
-
 ## Loop (always)
 0. Pick the style guide (see Styles below) and read it; none fits → `styles/new-style.md`.
    Complex scene (subject + setting, 4+ elements, story, poster) → also `styles/planning.md`: PLAN + FOCUS, 3 grey thumbnails, passes.
@@ -139,6 +138,14 @@ c.anime_cloud(x, y, w, h=.55w, palette="day"|"sunset"|"dusk"|"storm"|(shadow,mid
 c.anime_tree(x, y, height, kind="round"|"tall"|"umbrella", palette="summer"|"spring"|"autumn"|"sakura"|"dusk"|(sh,mid,lt,rim,trunk), light, width, leafy=.6, seed)  # cel-shaded tree
 c.anime_mountains(y_foot, height, peaks=4, x0, x1, palette="day"|"dusk"|"autumn"|(sh,mid,lt,snow,snow_sh,haze), light, snow=.35, haze=.6, sharp=1, depth=.35, bands=3, seed)  # eroded relief, front view, cel tones
 c.sparkles(n, region=mask, size=(6, 16), color, rays=4, glow=.6, seed)   # star glints (water, snow)
+```
+
+## Atmosphere (atmos) — paints on the current layer: give each its own named layer
+```
+c.smoke(x, y, height, width=h/8, drift=.3 (lean, + right), spread=3, curl=1, wisps=.6, color, shadow, light=(az, elev), density)
+c.rain(n=700, angle=12, length=(far, near), width, opacity=.55, depth=3, region=mask, splashes=0, ground=mask) · c.snowfall(n=500, size=(1.2, 5), bokeh=.06, region)
+c.mist(y0, y1, color, density=.75, wisps=.6, x0, x1)   # fog bank: clear at y0, thickest at y1; put it between depth planes
+c.lightning(x0, y0, x1, y1, branches=4, jag=.16, width=2.5, color, glow=1)   # rain and smoke share one wind
 ```
 
 ## Figures (figure) — feet at (x, y), height = standing px (animals: withers)
