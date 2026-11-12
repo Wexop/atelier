@@ -9,7 +9,7 @@ the LLM wrote, computed on the CPU.
 
 That covers any style: photoreal 3D, oil and watercolour painting, anime-style painted landscapes, comics and
 engravings, people, landscapes, posters and typography, pixel art, generative abstracts, and new styles the agent
-works out itself from a reference. Under the hood: noise fields, vector shapes, a brush engine, effects,
+works out itself from a reference, and the same scripts can loop into GIFs. Under the hood: noise fields, vector shapes, a brush engine, effects,
 an SDF path tracer, terrain erosion, a physical sky, posable figures, and tools that let the LLM inspect its own renders.
 
 Website: <https://atelier.wexop.eu> · every image below was made by atelier from a script in [examples/](examples).
@@ -100,6 +100,34 @@ atelier render night.py                    # final render
 atelier animate night.py --frames 24 --check   # GIF loop (T = 0..1 in the script) + motion check sheet
 ```
 
+## Animation
+
+<p>
+  <img src="examples/lava.gif" width="49%" alt="Lava lamp loop: coral wax blobs rise, merge and split over a violet glow">
+  <img src="examples/daynight.gif" width="49%" alt="Day-night loop over flat hills: sun and moon on one wheel, sky and hills changing colour">
+</p>
+
+The same scene script can move. `atelier animate` renders it once per frame and gives the script a time `T` that goes
+from 0 to 1 over the clip; `T = 1` is the first frame again, so anything periodic in `T` loops without a seam.
+Small helpers drive the motion: `key` (keyframes on numbers, positions or colours), `ease`, `wave`, `orbit` (noise that
+drifts and loops). Out come GIF, WebP or MP4.
+
+```python
+# the idea behind daynight.py: one colour per phase of the day, the sun on a wheel
+sky = key(T, [(0, "#ffd3a0"), (.25, "#d2f0ff"), (.5, "#ffb35c"), (.75, "#2b3570"), (1, "#ffd3a0")], ease="sine")
+a = math.pi - 2 * math.pi * T
+c.circle(W / 2 + 205 * math.cos(a), HZ + 10 - 165 * math.sin(a), 22, fill="#fff2c2")
+```
+
+```bash
+atelier animate daynight.py --frames 120 --fps 24 --check   # -> daynight.gif + daynight_frames.jpg
+```
+
+An LLM cannot watch a GIF, so `--check` turns the motion into a still it can read: key frames, an onion skin of all
+frames, a map of where things move, the change curve, and flags for frozen scenes, jumps, loop seams and flicker
+(a seed re-rolled every frame). Both loops above: [lava.py](examples/lava.py), [daynight.py](examples/daynight.py);
+recipes in the [animation guide](styles/animation.md).
+
 ## What's inside
 
 | module | contents |
@@ -115,8 +143,9 @@ atelier animate night.py --frames 24 --check   # GIF loop (T = 0..1 in the scrip
 | `anime` | cel-shaded painted elements: cumulus clouds, trees, eroded mountain ranges; god rays, lens flare, sparkles |
 | `terrain` · `nature` | eroded terrain, physical sky and raymarched clouds, aerial perspective, lakes and seas (FFT waves), 2D and 3D trees, grass, flowers, ferns |
 | `figure` | posable people (15 poses, outfits, hair, body types) and animals in flat, line, ink or 3D mannequin styles; perspective crowds |
+| `anim` | animation: `T` in the script, keyframes and easing, seamless loops, GIF / WebP / MP4 export, motion check sheet |
 | `inspect` | quality metrics (noise, aliasing, banding, clipping), contact sheets, A/B compare, composition guides, placement grid with layer bounds, self-critique (figure-ground contrast, balance, near-miss alignment, tangents, placeholder primitives, style mix, floating bases, near-miss seams, off-ambient colour, ungrounded subject, focus hierarchy, squint test), scored variant sheets, reference palette and tone transfer |
-| `cli` | `atelier render / inspect / critique / sheet / compare / reference / palette / brushes / fx` |
+| `cli` | `atelier render / inspect / critique / sheet / compare / reference / animate / palette / brushes / fx` |
 
 The full API cheat sheet (made for an LLM) is [SKILL.md](SKILL.md), style guides are in [styles/](styles).
 Gallery scripts are in [examples/](examples).
